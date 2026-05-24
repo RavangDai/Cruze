@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cruze"
+version = "0.1.0"
+description = "Vision-first AI co-pilot for the car dashboard"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+vision = [
+    "opencv-python>=4.9",
+    "ultralytics>=8.2",
+    "scipy>=1.13",
+]
+telemetry = [
+    "obd>=0.7",
+    "pyserial>=3.5",
+]
+voice = [
+    "faster-whisper>=1.0",
+    "openwakeword>=0.6",
+    "anthropic>=0.30",
+]
+all = [
+    "cruze[vision]",
+    "cruze[telemetry]",
+    "cruze[voice]",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+cruze = "cruze.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.package-dir]
+"" = "src"

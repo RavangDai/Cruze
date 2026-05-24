@@ -1,0 +1,60 @@
+# Cruze default configuration.
+# Hardware profiles layer on top of this; env vars layer on top of those.
+
+camera:
+  device_index: 0
+  width: 1280
+  height: 720
+  fps: 30
+  hfov_deg: 70.0
+  simulated: false
+
+perception:
+  backend: yolo
+  model_path: models/yolov8n.pt
+  confidence_threshold: 0.4
+  max_track_age: 5
+  iou_threshold: 0.3
+  latency_budget_ms: 50.0
+
+telemetry:
+  obd_port: auto
+  gps_port: sim
+  imu_port: sim
+  simulated: false
+
+maps:
+  overpass_url: https://overpass-api.de/api/interpreter
+  cache_db_path: cache/speed_limits.db
+  cache_grid_deg: 0.001
+  offline_only: false
+
+reasoning:
+  fcw_ttc_threshold_s: 3.0
+  tailgating_gap_threshold_s: 2.0
+  speeding_grace_mps: 1.4
+  event_cooldown_s: 8.0
+
+voice:
+  wake_backend: stub
+  wake_word: cruze
+  stt_backend: stub
+  whisper_model: base.en
+  tts_backend: stub
+  piper_model_path: models/en_US-lessac-medium.onnx
+  claude_model: claude-sonnet-4-6
+  offline_mode: false
+
+hmi:
+  enabled: true
+  window_title: Cruze HUD
+  overlay_alpha: 0.7
+  show_track_ids: true
+  show_distance: true
+
+logging:
+  level: INFO
+  log_dir: logs
+  structured: false
+  max_bytes: 10000000
+  backup_count: 5

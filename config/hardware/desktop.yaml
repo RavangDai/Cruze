@@ -1,0 +1,31 @@
+# Desktop / laptop profile — webcam, no real OBD or GPS.
+
+camera:
+  device_index: 0
+  width: 1280
+  height: 720
+  fps: 30
+  simulated: false
+
+perception:
+  backend: yolo
+  latency_budget_ms: 80.0   # laptops are slower than Jetson
+
+telemetry:
+  simulated: true            # no OBD dongle on a laptop
+
+maps:
+  offline_only: false
+
+voice:
+  wake_backend: stub         # no mic array wired yet in Phase 1
+  stt_backend: stub
+  tts_backend: stub
+  offline_mode: false
+
+hmi:
+  enabled: true
+
+logging:
+  level: DEBUG
+  structured: false          # pretty output for dev

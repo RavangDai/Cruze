@@ -1,0 +1,34 @@
+# NVIDIA Jetson Orin Nano — TensorRT backend, real OBD + GPS.
+
+camera:
+  device_index: 0
+  width: 1920
+  height: 1080
+  fps: 30
+
+perception:
+  backend: tensorrt
+  model_path: models/yolov8n.engine
+  latency_budget_ms: 25.0   # TensorRT on Orin is fast
+
+telemetry:
+  obd_port: /dev/ttyUSB0
+  gps_port: /dev/ttyACM0
+  simulated: false
+
+maps:
+  offline_only: false
+
+voice:
+  wake_backend: openwakeword
+  stt_backend: faster_whisper
+  tts_backend: piper
+  offline_mode: false
+
+hmi:
+  enabled: true
+  window_title: Cruze
+
+logging:
+  level: INFO
+  structured: true

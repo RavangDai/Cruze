@@ -1,0 +1,28 @@
+# Raspberry Pi 5 + Hailo-8 accelerator.
+
+camera:
+  device_index: 0
+  width: 1280
+  height: 720
+  fps: 20
+
+perception:
+  backend: tflite
+  model_path: models/yolov8n_hailo.tflite
+  latency_budget_ms: 50.0
+
+telemetry:
+  obd_port: /dev/ttyUSB0
+  gps_port: /dev/ttyACM0
+  simulated: false
+
+voice:
+  wake_backend: openwakeword
+  stt_backend: faster_whisper
+  whisper_model: tiny.en         # Pi 5 CPU only; tiny is fastest
+  tts_backend: piper
+  offline_mode: true             # Pi may lack reliable internet
+
+logging:
+  level: INFO
+  structured: true

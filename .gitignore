@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Model weights (download separately — see models/README.md)
+models/*.pt
+models/*.onnx
+models/*.tflite
+models/*.engine
+models/*.bin
+models/*.gguf
+
+# Calibration and recorded drives
+calibration/
+drives/
+*.npz
+*.bag
+
+# Secrets
+.env
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and metrics
+logs/
+*.log
+*.jsonl
+
+# SQLite caches
+*.db
+*.sqlite
