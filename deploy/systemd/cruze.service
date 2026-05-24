@@ -1,0 +1,23 @@
+[Unit]
+Description=Cruze AI co-pilot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cruze
+WorkingDirectory=/opt/cruze
+ExecStart=/opt/cruze/.venv/bin/python -m cruze --hardware jetson_orin
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cruze
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/opt/cruze/.env
+
+# Safety: never OOM-kill the co-pilot.
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

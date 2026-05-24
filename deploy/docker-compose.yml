@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  cruze:
+    build: ..
+    image: cruze:latest
+    restart: unless-stopped
+    devices:
+      - /dev/video0:/dev/video0   # webcam
+    environment:
+      - CRUZE_PERCEPTION_BACKEND=yolo
+      - CRUZE_VOICE_OFFLINE_MODE=false
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+    # X11 forwarding for HUD (Linux desktop).
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
