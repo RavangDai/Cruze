@@ -6,7 +6,8 @@
       "Bash(python -m pytest tests/test_bus.py tests/test_tracker.py -v)",
       "Bash(python -m pytest tests/ -v)",
       "Bash(python scripts/benchmark.py --backend stub --frames 50)",
-      "Bash(timeout 4 python -m cruze --hardware desktop --no-camera)"
+      "Bash(timeout 4 python -m cruze --hardware desktop --no-camera)",
+      "Bash(python -c ' *)"
     ]
   }
 }
