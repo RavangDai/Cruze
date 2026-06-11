@@ -43,3 +43,6 @@ logs/
 # SQLite caches
 *.db
 *.sqlite
+
+# Brainstorming session mockups
+.superpowers/
