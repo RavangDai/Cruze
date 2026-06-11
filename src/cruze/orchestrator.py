@@ -155,6 +155,8 @@ def build_and_run(
     hardware_profile: str = "desktop",
     no_camera: bool = False,
     log_level: str | None = None,
+    video: str | None = None,
+    loop: bool = False,
 ) -> None:
     """
     Load config, configure logging, and run the orchestrator.
@@ -164,6 +166,12 @@ def build_and_run(
 
     if no_camera:
         cfg.camera.simulated = True
+
+    if video:
+        # A video file replaces both the live camera and simulated frames.
+        cfg.camera.simulated = False
+        cfg.camera.source = video
+        cfg.camera.loop = loop
 
     if log_level:
         cfg.logging.level = log_level.upper()

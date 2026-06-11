@@ -37,6 +37,10 @@ class CameraConfig:
     # Horizontal field of view in degrees; used to derive focal_length_px.
     hfov_deg: float = 70.0
     simulated: bool = False          # True → StubCamera; no real device opened
+    # Path to a video file to replay instead of a live device. Empty → use
+    # device_index. When set, frames are paced at the file's native FPS.
+    source: str = ""
+    loop: bool = False               # When replaying a file, restart at EOF
 
 
 @dataclass

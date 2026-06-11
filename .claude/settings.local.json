@@ -7,7 +7,16 @@
       "Bash(python -m pytest tests/ -v)",
       "Bash(python scripts/benchmark.py --backend stub --frames 50)",
       "Bash(timeout 4 python -m cruze --hardware desktop --no-camera)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(pip show *)",
+      "Bash(python -c \"import numpy; print\\('numpy', numpy.__version__\\)\")",
+      "Bash(python -c \"import yaml; print\\('yaml ok'\\)\")",
+      "Bash(python -c \"import cv2; print\\('cv2', cv2.__version__\\)\")",
+      "Bash(python -c \"import ultralytics; print\\('ultralytics ok'\\)\")",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(timeout 20 python -m cruze --hardware desktop --no-camera --log-level INFO)",
+      "Bash(timeout 25 python -m cruze --hardware desktop --no-camera --log-level DEBUG)",
+      "Bash(echo \"=== exit code $? ===\")"
     ]
   }
 }

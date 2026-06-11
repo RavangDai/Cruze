@@ -92,26 +92,53 @@ class CameraService:
                 "Install it with: pip install 'cruze[vision]'"
             ) from exc
 
-        cap = cv2.VideoCapture(self._cfg.device_index)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._cfg.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._cfg.height)
-        cap.set(cv2.CAP_PROP_FPS, self._cfg.fps)
+        is_file = bool(self._cfg.source)
+        if is_file:
+            import os
+            if not os.path.isfile(self._cfg.source):
+                raise RuntimeError(f"Video file not found: {self._cfg.source}")
+            cap = cv2.VideoCapture(self._cfg.source)
+        else:
+            cap = cv2.VideoCapture(self._cfg.device_index)
+            # Resolution/FPS hints only apply to live capture devices; a video
+            # file plays at whatever it was encoded with.
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._cfg.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._cfg.height)
+            cap.set(cv2.CAP_PROP_FPS, self._cfg.fps)
 
         if not cap.isOpened():
+            src = self._cfg.source if is_file else f"device index={self._cfg.device_index}"
             raise RuntimeError(
-                f"Cannot open camera device index={self._cfg.device_index}. "
-                "Check the device is connected, or use --no-camera for simulated mode."
+                f"Cannot open camera source: {src}. "
+                "Check the device/file, or use --no-camera for simulated mode."
             )
 
-        logger.info("Camera: opened device %d (%dx%d @ %d fps)",
-                    self._cfg.device_index, self._cfg.width, self._cfg.height, self._cfg.fps)
+        # Pace file playback at the file's native FPS so timing-dependent rules
+        # (closing speed, TTC) behave as they would in real time. Fall back to
+        # the configured FPS when the file reports a bogus value.
+        if is_file:
+            native_fps = cap.get(cv2.CAP_PROP_FPS)
+            fps = native_fps if native_fps and native_fps > 0 else self._cfg.fps
+            logger.info("Camera: replaying file %s @ %.1f fps (loop=%s)",
+                        self._cfg.source, fps, self._cfg.loop)
+        else:
+            fps = self._cfg.fps
+            logger.info("Camera: opened device %d (%dx%d @ %d fps)",
+                        self._cfg.device_index, self._cfg.width, self._cfg.height, self._cfg.fps)
 
         try:
-            interval = 1.0 / self._cfg.fps
+            interval = 1.0 / fps
             while self._running:
                 t0 = time.monotonic()
                 ret, image = cap.read()
                 if not ret:
+                    if is_file:
+                        if self._cfg.loop:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            continue
+                        logger.info("Camera: end of video file — stopping (%d frames)",
+                                    self._frame_id)
+                        break
                     logger.warning("Camera: frame grab failed — skipping")
                     await asyncio.sleep(0.01)
                     continue
@@ -127,4 +154,5 @@ class CameraService:
                 await asyncio.sleep(max(0.0, interval - elapsed))
         finally:
             cap.release()
-            logger.info("Camera: released device %d", self._cfg.device_index)
+            src = self._cfg.source if is_file else f"device {self._cfg.device_index}"
+            logger.info("Camera: released %s", src)

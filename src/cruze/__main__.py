@@ -31,6 +31,17 @@ def _parse_args() -> argparse.Namespace:
         help="Use simulated frames instead of a real camera device",
     )
     p.add_argument(
+        "--video",
+        default=None,
+        metavar="PATH",
+        help="Replay a video file instead of a live camera (paced at the file's FPS)",
+    )
+    p.add_argument(
+        "--loop",
+        action="store_true",
+        help="With --video, restart the file when it ends instead of stopping",
+    )
+    p.add_argument(
         "--log-level",
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -46,6 +57,8 @@ def main() -> None:
         hardware_profile=args.hardware,
         no_camera=args.no_camera,
         log_level=args.log_level,
+        video=args.video,
+        loop=args.loop,
     )
 
 
