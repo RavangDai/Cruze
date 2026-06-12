@@ -150,3 +150,53 @@ def test_reset_clears_all_tracks():
     assert tracker.active_track_count == 0
     tracks = tracker.update([_det(0, 0, 50, 50)])
     assert tracks[0].track_id == 1  # IDs restart from 1
+
+
+# --- Kalman filtering ---
+
+def test_closing_speed_none_until_second_distance():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=30.0)], timestamp=0.0)
+    assert tracks[0].closing_speed_mps is None
+    assert tracks[0].distance_m == pytest.approx(30.0)
+
+
+def test_kalman_rejects_distance_spike():
+    """A single wild distance measurement must not yank the filtered distance."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, dist=30.0)], timestamp=0.0)
+    tracker.update([_det(10, 10, 50, 50, dist=29.5)], timestamp=0.1)
+    tracker.update([_det(10, 10, 50, 50, dist=29.0)], timestamp=0.2)
+    # Spike: monocular depth glitches to 60 m for one frame.
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=60.0)], timestamp=0.3)
+    assert tracks[0].distance_m < 40.0, "filter swallowed the 60 m spike"
+    # Next normal frame pulls it back.
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=28.5)], timestamp=0.4)
+    assert tracks[0].distance_m < 33.0
+
+
+def test_kalman_converges_to_constant_closing_speed():
+    """Constant 5 m/s approach at 1 Hz → closing speed near 5 within a few frames."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    for i, dist in enumerate([50.0, 45.0, 40.0, 35.0, 30.0]):
+        tracks = tracker.update([_det(10, 10, 50, 50, dist=dist)], timestamp=float(i))
+    closing = tracks[0].closing_speed_mps
+    assert closing is not None
+    assert 4.0 < closing < 6.0
+
+
+def test_kalman_survives_zero_distance_measurements():
+    """distance_m of exactly 0.0 must not divide-by-zero the filter."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.0)
+    tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.1)
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.2)
+    assert tracks[0].distance_m == pytest.approx(0.0, abs=0.5)
+
+
+def test_track_without_distance_has_none_fields():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50)], timestamp=0.0)
+    tracks = tracker.update([_det(10, 10, 50, 50)], timestamp=0.1)
+    assert tracks[0].distance_m is None
+    assert tracks[0].closing_speed_mps is None

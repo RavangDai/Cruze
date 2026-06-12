@@ -105,13 +105,23 @@ class PerceptionService:
 
         # Annotate detections with monocular depth if focal length is known.
         if frame.focal_length_px is not None:
+            image_height = frame.image.shape[0]
+            horizon_y = depth_mod.horizon_y_px(
+                image_height,
+                frame.focal_length_px,
+                self._cfg.perception.camera_pitch_deg,
+            )
             detections = [
                 Detection(
                     bbox=d.bbox,
                     confidence=d.confidence,
                     cls=d.cls,
-                    distance_m=depth_mod.estimate_distance(
-                        d.bbox, d.cls, frame.focal_length_px
+                    distance_m=depth_mod.estimate_distance_fused(
+                        d.bbox,
+                        d.cls,
+                        frame.focal_length_px,
+                        self._cfg.perception.camera_height_m,
+                        horizon_y,
                     ),
                 )
                 for d in detections

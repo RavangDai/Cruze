@@ -99,6 +99,9 @@ class Track:
     age_missed: int = 0
     # Timestamp of the frame this track was last updated.
     timestamp: float = field(default_factory=time.monotonic)
+    # Absolute ground speed estimate (ego speed − closing speed); None when
+    # either input is unavailable. Valid for same-direction traffic only.
+    speed_mps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -118,14 +121,18 @@ class VehicleState:
     """Fused snapshot from OBD, GPS, IMU."""
 
     timestamp: float = field(default_factory=time.monotonic)
-    speed_mps: float | None = None        # OBD or vision-estimated
-    speed_mps_source: str = "unknown"     # "obd" | "vision" | "simulated"
+    speed_mps: float | None = None        # fused: OBD > GPS Doppler > GPS position
+    speed_mps_source: str = "unknown"     # "obd" | "gps" | "gps_pos" | "simulated"
     heading_deg: float | None = None      # 0=N, clockwise
     latitude: float | None = None
     longitude: float | None = None
     altitude_m: float | None = None
     acceleration_mps2: float | None = None
     posted_speed_limit_mps: float | None = None  # from maps module; None if unknown
+    # Raw GPS Doppler speed (RMC speed-over-ground), kept separate from the
+    # fused speed_mps for transparency/debugging. Do not promote to speed_mps
+    # in consumers — the telemetry fusion layer decides which source wins.
+    gps_speed_mps: float | None = None
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ Publishes:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Object classes considered lead vehicles (not signs or people).
+# Object classes treated as vehicles for lead selection and absolute-speed
+# annotation. Bicycles are deliberately excluded: their depth/closing-speed
+# estimates are too noisy for a meaningful ego-minus-closing speed.
 _VEHICLE_CLASSES = {
     ObjectClass.CAR,
     ObjectClass.TRUCK,
@@ -93,6 +96,7 @@ class SceneAssembler:
         self._running = False
 
     def _build_scene(self, tracks: list[Track]) -> Scene:
+        tracks = self._with_absolute_speed(tracks)
         lead = self._find_lead(tracks)
         return Scene(
             timestamp=time.monotonic(),
@@ -100,6 +104,28 @@ class SceneAssembler:
             vehicle_state=self._latest_vehicle_state,
             lead_track=lead,
         )
+
+    def _with_absolute_speed(self, tracks: list[Track]) -> list[Track]:
+        """
+        Attach absolute ground speed: ego speed − closing speed.
+
+        Valid for same-direction traffic (the dominant case for vehicles
+        ahead); oncoming vehicles read high. Clamped at 0 — a negative value
+        would mean the target is reversing toward us, which at our accuracy
+        is indistinguishable from noise.
+        """
+        ego = self._latest_vehicle_state.speed_mps
+        if ego is None:
+            return tracks
+        out: list[Track] = []
+        for t in tracks:
+            if t.cls in _VEHICLE_CLASSES and t.closing_speed_mps is not None:
+                out.append(
+                    dataclasses.replace(t, speed_mps=max(0.0, ego - t.closing_speed_mps))
+                )
+            else:
+                out.append(t)
+        return out
 
     def _find_lead(self, tracks: list[Track]) -> Track | None:
         """

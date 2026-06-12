@@ -16,6 +16,8 @@ perception:
   max_track_age: 5
   iou_threshold: 0.3
   latency_budget_ms: 50.0
+  camera_height_m: 1.2     # lens height above road surface (metres)
+  camera_pitch_deg: 0.0    # positive = tilted down
 
 telemetry:
   obd_port: auto
@@ -47,6 +49,10 @@ voice:
 
 hmi:
   enabled: true
+  backend: web            # web | opencv | none
+  web_host: 127.0.0.1     # 0.0.0.0 to allow a dash-mounted tablet
+  web_port: 8484
+  jpeg_quality: 75        # WebSocket JPEG stream quality (1-100)
   window_title: Cruze HUD
   overlay_alpha: 0.7
   show_track_ids: true

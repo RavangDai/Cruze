@@ -1,20 +1,25 @@
 """
 Monocular distance estimation using the pinhole camera model.
 
-Method: given a detected bounding box of known real-world height H, the
-distance Z is estimated from the similar-triangles relationship:
+Two methods, fused by estimate_distance_fused() (the recommended entry point):
 
-    Z = (H_real * f) / H_bbox_px
+1. Ground-plane (primary, road-contact classes): the bbox bottom edge touches
+   the road, so flat-road similar triangles give
 
-where f is the focal length in pixels, derived once at startup from the
-configured horizontal field-of-view and image width:
+       Z = (f * H_cam) / (y_bottom - y_horizon)
 
-    f = (image_width / 2) / tan(hfov / 2)
+   Independent of object size → ±5-10 % on flat roads. Invalid for elevated
+   objects (signs, lights) or boxes at/above the horizon.
 
-Accuracy: ±20-30% under ideal conditions. Degrades with:
-  - Non-frontal vehicle orientation (broadside car looks "taller")
-  - Partial occlusion (bbox height is clipped)
-  - Lens distortion (correct with calibrate_camera.py)
+2. Bbox-height (fallback): given a known real-world height H per class,
+
+       Z = (H_real * f) / H_bbox_px
+
+   Accuracy ±20-30 %; degrades with non-frontal orientation, occlusion
+   (clipped bbox), and lens distortion (correct with calibrate_camera.py).
+
+f is the focal length in pixels, derived once at startup from the configured
+horizontal field-of-view and image width: f = (image_width / 2) / tan(hfov / 2).
 
 For production-grade accuracy, use stereo vision or LiDAR; treat this as a
 useful approximation for warning thresholds, not precise measurement.
@@ -70,3 +75,66 @@ def estimate_distance(
     distance = (h_real * focal_length) / h_px
     # Clamp to [0.5 m, 200 m] — outside this range the estimate is noise.
     return max(0.5, min(distance, 200.0))
+
+
+# Classes whose bbox bottom edge touches the road surface — ground-plane
+# geometry applies. Signs and lights are elevated; bbox-height only.
+_GROUND_CONTACT_CLASSES = {
+    ObjectClass.CAR,
+    ObjectClass.TRUCK,
+    ObjectClass.BUS,
+    ObjectClass.MOTORCYCLE,
+    ObjectClass.BICYCLE,
+    ObjectClass.PERSON,
+}
+
+# Bbox bottoms closer to the horizon than this are unusable: at <8 px a
+# single-pixel error changes the estimate by >12 %, swamping the geometry.
+_MIN_HORIZON_OFFSET_PX = 8.0
+
+
+def horizon_y_px(image_height: int, focal_length: float, pitch_deg: float) -> float:
+    """
+    Image row of the horizon. pitch_deg > 0 = camera tilted down, which moves
+    the horizon up (smaller y) by f·tan(pitch) from the principal point.
+    """
+    return image_height / 2.0 - focal_length * math.tan(math.radians(pitch_deg))
+
+
+def estimate_distance_ground_plane(
+    bbox: BBox,
+    focal_length: float,
+    camera_height_m: float,
+    horizon_y: float,
+) -> float | None:
+    """
+    Flat-road distance from the bbox bottom edge:
+
+        Z = f · H_cam / (y_bottom − y_horizon)
+
+    Pure similar-triangles on the ground plane: independent of object size,
+    so it avoids the ±20-30 % class-height error of the bbox-height method.
+    Returns None when the bbox bottom is at/above the horizon (crest, clipped
+    box, elevated object) — caller should fall back to bbox-height.
+    """
+    dy = bbox.y2 - horizon_y
+    if dy < _MIN_HORIZON_OFFSET_PX:
+        return None
+    distance = focal_length * camera_height_m / dy
+    # Same plausibility clamp as estimate_distance().
+    return max(0.5, min(distance, 200.0))
+
+
+def estimate_distance_fused(
+    bbox: BBox,
+    cls: ObjectClass,
+    focal_length: float,
+    camera_height_m: float,
+    horizon_y: float,
+) -> float | None:
+    """Ground-plane estimate for road-contact classes; bbox-height otherwise."""
+    if cls in _GROUND_CONTACT_CLASSES:
+        gp = estimate_distance_ground_plane(bbox, focal_length, camera_height_m, horizon_y)
+        if gp is not None:
+            return gp
+    return estimate_distance(bbox, cls, focal_length)

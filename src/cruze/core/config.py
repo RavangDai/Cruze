@@ -54,6 +54,11 @@ class PerceptionConfig:
     iou_threshold: float = 0.3
     # Latency budget for the full perception pipeline in milliseconds.
     latency_budget_ms: float = 50.0
+    # Camera mounting geometry for ground-plane distance estimation.
+    # Height of the lens above the road surface (typical dash mount ≈ 1.2 m).
+    camera_height_m: float = 1.2
+    # Downward tilt of the camera in degrees (0 = level with the road).
+    camera_pitch_deg: float = 0.0
 
 
 @dataclass
@@ -106,6 +111,14 @@ class VoiceConfig:
 @dataclass
 class HMIConfig:
     enabled: bool = True
+    # "web" = browser dashboard, "opencv" = legacy cv2 window, "none" = headless.
+    backend: str = "web"
+    # Bind loopback by default; set 0.0.0.0 to reach the dashboard from a
+    # tablet on the car's hotspot (no auth — LAN-trusted only).
+    web_host: str = "127.0.0.1"
+    web_port: int = 8484
+    # JPEG quality for the WebSocket video stream (75 ≈ 60 KB/frame at 720p).
+    jpeg_quality: int = 75
     window_title: str = "Cruze HUD"
     overlay_alpha: float = 0.7
     show_track_ids: bool = True

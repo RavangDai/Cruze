@@ -10,8 +10,9 @@ Algorithm:
   3. Matched tracks → update bbox, reset missed counter, update distance.
   4. Unmatched detections → create new track with fresh ID.
   5. Unmatched tracks → increment missed counter; drop when > max_age.
-  6. Estimate closing speed: Δdistance / Δtime using an exponential moving
-     average to smooth per-frame noise.
+  6. Estimate distance + closing speed with a per-track constant-velocity
+     Kalman filter — rejects single-frame depth spikes, converges in a few
+     frames (replaces the earlier EMA smoothing).
 
 Track IDs are monotonically increasing integers. They wrap at 2^31 (won't
 happen in practice).
@@ -27,9 +28,61 @@ from cruze.core.types import BBox, Detection, ObjectClass, Track
 
 logger = logging.getLogger(__name__)
 
-# Exponential moving average alpha for closing speed smoothing.
-# Smaller = more smoothing, more lag. 0.3 is a reasonable default.
-_EMA_ALPHA = 0.3
+
+class _DistanceKalman:
+    """
+    Per-track 1-D constant-velocity Kalman filter over (distance, d_dist/dt).
+
+    Replaces EMA smoothing: rejects single-frame monocular-depth spikes while
+    converging to a constant closing speed within a few observations.
+    """
+
+    # Process noise driver: relative acceleration between ego and target can
+    # reach ~3 m/s² under hard braking.
+    _ACCEL_NOISE = 3.0
+    # Measurement σ as a fraction of distance — monocular depth error grows
+    # roughly linearly with range (~7 % with ground-plane estimation).
+    _MEAS_FRAC = 0.07
+
+    def __init__(self, distance_m: float) -> None:
+        self.d = distance_m
+        self.v = 0.0  # d(distance)/dt; negative = approaching
+        # Initial covariance: distance fairly trusted (σ≈2 m), velocity unknown (σ≈5 m/s).
+        self.p11, self.p12, self.p22 = 4.0, 0.0, 25.0
+        self.updates = 0
+
+    @property
+    def ready(self) -> bool:
+        """True after at least one step() call — i.e. two distance
+        measurements total, since the first one seeds __init__."""
+        return self.updates >= 1
+
+    def step(self, measured_m: float, dt: float) -> None:
+        # --- Predict (constant velocity model) ---
+        d = self.d + self.v * dt
+        v = self.v
+        q = self._ACCEL_NOISE ** 2
+        q11 = q * dt ** 4 / 4.0
+        q12 = q * dt ** 3 / 2.0
+        q22 = q * dt ** 2
+        p11 = self.p11 + 2.0 * dt * self.p12 + dt * dt * self.p22 + q11
+        p12 = self.p12 + dt * self.p22 + q12
+        p22 = self.p22 + q22
+        # --- Update with the measured distance (H = [1, 0]) ---
+        # Floor R at (0.1 m)²: a measurement of ~0 m would otherwise give
+        # r=0 → gain 1 → covariance collapses to 0 → divide-by-zero next step.
+        r = max((self._MEAS_FRAC * measured_m) ** 2, 0.01)
+        s = p11 + r
+        k1 = p11 / s
+        k2 = p12 / s
+        innovation = measured_m - d
+        self.d = d + k1 * innovation
+        self.v = v + k2 * innovation
+        self.p11 = (1.0 - k1) * p11
+        self.p12 = (1.0 - k1) * p12
+        # `p12` here is the predicted value (local above), not self.p12.
+        self.p22 = p22 - k2 * p12
+        self.updates += 1
 
 
 @dataclass
@@ -39,8 +92,7 @@ class _TrackState:
     track_id: int
     bbox: BBox
     cls: ObjectClass
-    distance_m: float | None = None
-    closing_speed_mps: float | None = None
+    kalman: _DistanceKalman | None = None
     age_missed: int = 0
     last_updated: float = field(default_factory=time.monotonic)
 
@@ -49,8 +101,10 @@ class _TrackState:
             track_id=self.track_id,
             bbox=self.bbox,
             cls=self.cls,
-            distance_m=self.distance_m,
-            closing_speed_mps=self.closing_speed_mps,
+            distance_m=self.kalman.d if self.kalman is not None else None,
+            closing_speed_mps=(
+                -self.kalman.v if self.kalman is not None and self.kalman.ready else None
+            ),
             age_missed=self.age_missed,
             timestamp=self.last_updated,
         )
@@ -188,7 +242,7 @@ class Tracker:
             track_id=tid,
             bbox=det.bbox,
             cls=det.cls,
-            distance_m=det.distance_m,
+            kalman=_DistanceKalman(det.distance_m) if det.distance_m is not None else None,
             last_updated=now,
         )
 
@@ -198,17 +252,12 @@ class Tracker:
         trk.age_missed = 0
         trk.last_updated = now
 
-        # Update closing speed via EMA.
-        if det.distance_m is not None and trk.distance_m is not None and dt > 0:
-            raw_closing = (trk.distance_m - det.distance_m) / dt
-            if trk.closing_speed_mps is None:
-                trk.closing_speed_mps = raw_closing
-            else:
-                trk.closing_speed_mps = (
-                    _EMA_ALPHA * raw_closing + (1 - _EMA_ALPHA) * trk.closing_speed_mps
-                )
-
-        trk.distance_m = det.distance_m
+        if det.distance_m is None:
+            return  # keep last filtered state; no measurement this frame
+        if trk.kalman is None:
+            trk.kalman = _DistanceKalman(det.distance_m)
+        elif dt > 0:
+            trk.kalman.step(det.distance_m, dt)
 
     @property
     def active_track_count(self) -> int:
