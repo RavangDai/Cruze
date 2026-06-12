@@ -102,6 +102,20 @@ class Orchestrator:
             for svc in self._services
         ]
 
+        # Surface service crashes immediately; without this a failed task is
+        # silent until shutdown (gather happens with return_exceptions=True).
+        def _log_task_failure(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "Service task %s died: %s", task.get_name(), exc, exc_info=exc
+                )
+
+        for task in self._tasks:
+            task.add_done_callback(_log_task_failure)
+
         logger.info("All services started (%d tasks)", len(self._tasks))
 
         # --- Set up shutdown triggers ---
