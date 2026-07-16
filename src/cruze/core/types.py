@@ -34,6 +34,15 @@ class EventLevel(Enum):
     CRITICAL = "critical"
 
 
+class TrafficLightState(Enum):
+    """Lamp state of a detected traffic light. UNKNOWN = unlit/occluded/ambiguous."""
+
+    RED = "red"
+    YELLOW = "yellow"
+    GREEN = "green"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class BBox:
     """Bounding box in pixel coordinates (top-left origin)."""
@@ -82,6 +91,11 @@ class Detection:
     cls: ObjectClass
     # Distance estimate from monocular depth; None if not computed.
     distance_m: float | None = None
+    # Instance-mask outline polygon in image pixel coords, downsampled at the
+    # detector boundary; None for box-only backends/weights.
+    mask_xy: tuple[tuple[float, float], ...] | None = None
+    # Lamp state; set only for TRAFFIC_LIGHT detections, None otherwise.
+    light_state: TrafficLightState | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +113,61 @@ class Track:
     age_missed: int = 0
     # Timestamp of the frame this track was last updated.
     timestamp: float = field(default_factory=time.monotonic)
+    # Absolute ground speed estimate (ego speed − closing speed); None when
+    # either input is unavailable. Valid for same-direction traffic only.
+    speed_mps: float | None = None
+    # Latest instance-mask outline from the matched detection; None if the
+    # detector emits no masks or the track went unmatched this frame.
+    mask_xy: tuple[tuple[float, float], ...] | None = None
+    # Debounced lamp state; set only for TRAFFIC_LIGHT tracks.
+    light_state: TrafficLightState | None = None
+
+
+@dataclass(frozen=True)
+class LaneLine:
+    """One lane boundary as a pixel-space segment (bottom point first)."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+@dataclass(frozen=True)
+class Lanes:
+    """Per-frame lane detection result; either side may be None."""
+
+    left: LaneLine | None = None
+    right: LaneLine | None = None
+    timestamp: float = field(default_factory=time.monotonic)
+    frame_id: int = 0
+    # Curved boundary polylines in pixel coords, bottom point first; None
+    # when the quadratic fit was unavailable or unstable (straight LaneLine
+    # above remains the fallback).
+    left_poly: tuple[tuple[float, float], ...] | None = None
+    right_poly: tuple[tuple[float, float], ...] | None = None
+    # Ego lateral offset from the lane centre in metres, measured at the
+    # bottom image row via the ground-plane model; positive = ego right of
+    # centre. None when either boundary or camera geometry is missing.
+    cte_m: float | None = None
+
+
+@dataclass(frozen=True)
+class EgoEstimate:
+    """Per-frame bundle of vision_pilot ONNX net outputs (raw, pre-fusion).
+    Mirrors vision_pilot's InferenceFrameResult. Any field may be None/empty
+    when its net is disabled or produced no output this frame."""
+
+    timestamp: float = field(default_factory=time.monotonic)
+    frame_id: int = 0
+    # AutoSpeed vehicle boxes — CIPO/lead candidates (lead SELECTION is SP3).
+    cipo_boxes: tuple[Detection, ...] = ()
+    # AutoSteer ego-path polyline in raw image px, bottom-first; None if masked out.
+    ego_path: tuple[tuple[float, float], ...] | None = None
+    # AutoDrive scalars (domain-converted). None until the 2-frame buffer fills.
+    cipo_distance_m: float | None = None
+    road_curvature_1pm: float | None = None
+    cipo_flag: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -118,14 +187,18 @@ class VehicleState:
     """Fused snapshot from OBD, GPS, IMU."""
 
     timestamp: float = field(default_factory=time.monotonic)
-    speed_mps: float | None = None        # OBD or vision-estimated
-    speed_mps_source: str = "unknown"     # "obd" | "vision" | "simulated"
+    speed_mps: float | None = None        # fused: OBD > GPS Doppler > GPS position
+    speed_mps_source: str = "unknown"     # "obd" | "gps" | "gps_pos" | "simulated"
     heading_deg: float | None = None      # 0=N, clockwise
     latitude: float | None = None
     longitude: float | None = None
     altitude_m: float | None = None
     acceleration_mps2: float | None = None
     posted_speed_limit_mps: float | None = None  # from maps module; None if unknown
+    # Raw GPS Doppler speed (RMC speed-over-ground), kept separate from the
+    # fused speed_mps for transparency/debugging. Do not promote to speed_mps
+    # in consumers — the telemetry fusion layer decides which source wins.
+    gps_speed_mps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +210,18 @@ class Scene:
     vehicle_state: VehicleState = field(default_factory=VehicleState)
     # Nearest lead vehicle (same lane, ahead) if any.
     lead_track: Track | None = None
+    # Latest fresh lane detection; None when unavailable or stale.
+    lanes: Lanes | None = None
+    # IDM-required longitudinal acceleration in m/s²; negative = braking
+    # needed, None when ego speed is unknown. Computed by SceneAssembler so
+    # the HUD corridor colour and spoken events derive from the same number.
+    required_accel_mps2: float | None = None
+    # vision_pilot ONNX net outputs, folded from the PERCEPTION_EGO bundle by
+    # SceneAssembler. All None when the nets are disabled (the default).
+    ego_path: tuple[tuple[float, float], ...] | None = None
+    road_curvature_1pm: float | None = None
+    cipo_distance_m: float | None = None
+    cipo_flag: bool | None = None
 
 
 @dataclass(frozen=True)

@@ -11,11 +11,27 @@ camera:
 
 perception:
   backend: yolo
-  model_path: models/yolov8n.pt
+  model_path: models/yolov8n-seg.pt   # -seg = instance masks; box-only weights also work
   confidence_threshold: 0.4
+  lane_detection_enabled: true        # classical Canny+Hough, ~3-5 ms at 720p
   max_track_age: 5
   iou_threshold: 0.3
   latency_budget_ms: 50.0
+  camera_height_m: 1.2     # lens height above road surface (metres)
+  camera_pitch_deg: 0.0    # positive = tilted down
+  # vision_pilot ONNX nets (SP2) — all off by default; see config/hardware/vision_pilot.yaml.
+  onnx_provider: cpu            # cpu | cuda | tensorrt
+  autospeed_enabled: false
+  autosteer_enabled: false
+  autodrive_enabled: false
+  autospeed_model_path: models/autospeed_fp32.onnx
+  autosteer_model_path: models/autosteer_fp32.onnx
+  autodrive_model_path: models/autodrive_fp32.onnx
+  autospeed_conf_threshold: 0.6
+  autospeed_iou_threshold: 0.45
+  autodrive_homography_path: calibration/vision_pilot_C.yaml
+  autodrive_curv_scale: 1.0
+  autodrive_flag_threshold: 0.5
 
 telemetry:
   obd_port: auto
@@ -34,6 +50,20 @@ reasoning:
   tailgating_gap_threshold_s: 2.0
   speeding_grace_mps: 1.4
   event_cooldown_s: 8.0
+  # IDM longitudinal threat scoring (Treiber canonical values)
+  idm_max_accel_mps2: 1.5       # a: comfortable acceleration
+  idm_comfort_decel_mps2: 3.0   # b: comfortable braking
+  idm_headway_s: 1.5            # T: desired time headway
+  idm_min_gap_m: 2.0            # s0: standstill minimum gap
+  idm_delta: 4.0                # free-road acceleration exponent
+  desired_speed_mps: 27.0       # v0 fallback when no posted limit (~60 mph)
+  idm_advise_decel_mps2: 3.0    # decel demand beyond this -> brake_advised
+  idm_hard_decel_mps2: 5.0      # ~0.5 g -> brake_hard (critical)
+  # Lane departure warning
+  ldw_cte_threshold_m: 0.5      # half-car-width drift from lane centre
+  ldw_min_speed_mps: 8.0        # ~18 mph gate (parking-lot suppression)
+  # Cut-in detection
+  cut_in_margin_m: 5.0          # new lead must be >=5 m closer than previous
 
 voice:
   wake_backend: stub
@@ -47,10 +77,16 @@ voice:
 
 hmi:
   enabled: true
+  backend: web            # web | opencv | both | none
+  web_host: 127.0.0.1     # 0.0.0.0 to allow a dash-mounted tablet
+  web_port: 8484
+  jpeg_quality: 75        # WebSocket JPEG stream quality (1-100)
   window_title: Cruze HUD
   overlay_alpha: 0.7
   show_track_ids: true
   show_distance: true
+  show_masks: true        # translucent instance-mask fills (-seg weights)
+  show_lanes: true        # lane-line overlay
 
 logging:
   level: INFO

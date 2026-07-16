@@ -24,6 +24,8 @@ class Channel:
     PERCEPTION_FRAME = "perception.frame"
     PERCEPTION_DETECTIONS = "perception.detections"
     PERCEPTION_TRACKS = "perception.tracks"
+    PERCEPTION_LANES = "perception.lanes"
+    PERCEPTION_EGO = "perception.ego"
     TELEMETRY_VEHICLE_STATE = "telemetry.vehicle_state"
     REASONING_SCENE = "reasoning.scene"
     REASONING_EVENT = "reasoning.event"

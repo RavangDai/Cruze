@@ -32,6 +32,7 @@ from cruze.perception.camera import CameraService
 from cruze.perception import depth as depth_mod
 from cruze.perception.detector import load as load_detector
 from cruze.perception.pipeline import PerceptionService
+from cruze.perception.vision_nets import build_vision_nets
 from cruze.telemetry.vehicle_state import VehicleStateService
 from cruze.reasoning.scene import SceneAssembler
 from cruze.reasoning.events import EventEngine
@@ -40,6 +41,7 @@ from cruze.voice.wake import WakeWordService
 from cruze.voice.stt import STTService
 from cruze.voice.tts import TTSService
 from cruze.hmi.hud import HUDService
+from cruze.hmi.webapp import DashboardService
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,7 @@ class Orchestrator:
             model_path=cfg.perception.model_path,
             confidence_threshold=cfg.perception.confidence_threshold,
         )
-        perception_svc = PerceptionService(cfg, bus, detector)
+        perception_svc = PerceptionService(cfg, bus, detector, vision_nets=build_vision_nets(cfg))
 
         telemetry_svc = VehicleStateService(cfg, bus)
         scene_svc = SceneAssembler(cfg, bus, image_width=cfg.camera.width)
@@ -89,11 +91,12 @@ class Orchestrator:
         stt_svc = STTService(cfg.voice, bus)
         tts_svc = TTSService(cfg.voice, bus)
         hud_svc = HUDService(cfg, bus)
+        dashboard_svc = DashboardService(cfg, bus)
 
         self._services = [
             camera_svc, perception_svc, telemetry_svc,
             scene_svc, event_svc, persona_svc,
-            wake_svc, stt_svc, tts_svc, hud_svc,
+            wake_svc, stt_svc, tts_svc, hud_svc, dashboard_svc,
         ]
 
         # --- Start tasks ---
@@ -101,6 +104,20 @@ class Orchestrator:
             asyncio.create_task(svc.run(), name=type(svc).__name__)
             for svc in self._services
         ]
+
+        # Surface service crashes immediately; without this a failed task is
+        # silent until shutdown (gather happens with return_exceptions=True).
+        def _log_task_failure(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "Service task %s died: %s", task.get_name(), exc, exc_info=exc
+                )
+
+        for task in self._tasks:
+            task.add_done_callback(_log_task_failure)
 
         logger.info("All services started (%d tasks)", len(self._tasks))
 

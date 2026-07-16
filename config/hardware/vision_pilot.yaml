@@ -1,0 +1,10 @@
+# "Every aspect of vision_pilot" profile — enables all three ONNX nets (fp32).
+# AutoDrive needs a camera-matched homography (calibration/vision_pilot_C.yaml);
+# the vendored C fits vision_pilot's camera only (spec §11). For edge hardware,
+# point the *_model_path keys at the *_int8.onnx weights and set onnx_provider:
+# tensorrt.
+perception:
+  onnx_provider: cpu
+  autospeed_enabled: true
+  autosteer_enabled: true
+  autodrive_enabled: true

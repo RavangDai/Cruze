@@ -4,12 +4,14 @@ Tracker unit tests — no ML deps; pure geometry.
 
 import pytest
 
-from cruze.core.types import BBox, Detection, ObjectClass
+from cruze.core.types import BBox, Detection, ObjectClass, TrafficLightState
 from cruze.perception.tracker import Tracker
 
 
-def _det(x1, y1, x2, y2, cls=ObjectClass.CAR, conf=0.9, dist=None):
-    return Detection(BBox(x1, y1, x2, y2), conf, cls, distance_m=dist)
+def _det(x1, y1, x2, y2, cls=ObjectClass.CAR, conf=0.9, dist=None,
+         mask=None, light=None):
+    return Detection(BBox(x1, y1, x2, y2), conf, cls, distance_m=dist,
+                     mask_xy=mask, light_state=light)
 
 
 # --- ID stability ---
@@ -150,3 +152,136 @@ def test_reset_clears_all_tracks():
     assert tracker.active_track_count == 0
     tracks = tracker.update([_det(0, 0, 50, 50)])
     assert tracks[0].track_id == 1  # IDs restart from 1
+
+
+# --- Kalman filtering ---
+
+def test_closing_speed_none_until_second_distance():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=30.0)], timestamp=0.0)
+    assert tracks[0].closing_speed_mps is None
+    assert tracks[0].distance_m == pytest.approx(30.0)
+
+
+def test_kalman_rejects_distance_spike():
+    """A single wild distance measurement must not yank the filtered distance."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, dist=30.0)], timestamp=0.0)
+    tracker.update([_det(10, 10, 50, 50, dist=29.5)], timestamp=0.1)
+    tracker.update([_det(10, 10, 50, 50, dist=29.0)], timestamp=0.2)
+    # Spike: monocular depth glitches to 60 m for one frame.
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=60.0)], timestamp=0.3)
+    assert tracks[0].distance_m < 40.0, "filter swallowed the 60 m spike"
+    # Next normal frame pulls it back.
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=28.5)], timestamp=0.4)
+    assert tracks[0].distance_m < 33.0
+
+
+def test_kalman_converges_to_constant_closing_speed():
+    """Constant 5 m/s approach at 1 Hz → closing speed near 5 within a few frames."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    for i, dist in enumerate([50.0, 45.0, 40.0, 35.0, 30.0]):
+        tracks = tracker.update([_det(10, 10, 50, 50, dist=dist)], timestamp=float(i))
+    closing = tracks[0].closing_speed_mps
+    assert closing is not None
+    assert 4.0 < closing < 6.0
+
+
+def test_kalman_survives_zero_distance_measurements():
+    """distance_m of exactly 0.0 must not divide-by-zero the filter."""
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.0)
+    tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.1)
+    tracks = tracker.update([_det(10, 10, 50, 50, dist=0.0)], timestamp=0.2)
+    assert tracks[0].distance_m == pytest.approx(0.0, abs=0.5)
+
+
+def test_track_without_distance_has_none_fields():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50)], timestamp=0.0)
+    tracks = tracker.update([_det(10, 10, 50, 50)], timestamp=0.1)
+    assert tracks[0].distance_m is None
+    assert tracks[0].closing_speed_mps is None
+
+
+# --- Mask propagation ---
+
+_MASK_A = ((10.0, 10.0), (50.0, 10.0), (30.0, 50.0))
+_MASK_B = ((12.0, 12.0), (52.0, 12.0), (32.0, 52.0))
+
+
+def test_mask_propagates_to_new_track():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracks = tracker.update([_det(10, 10, 50, 50, mask=_MASK_A)], timestamp=0.0)
+    assert tracks[0].mask_xy == _MASK_A
+
+
+def test_fresh_mask_replaces_old_on_match():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, mask=_MASK_A)], timestamp=0.0)
+    tracks = tracker.update([_det(12, 12, 52, 52, mask=_MASK_B)], timestamp=0.1)
+    assert tracks[0].mask_xy == _MASK_B
+
+
+def test_mask_cleared_when_detection_has_none():
+    # Masks are per-frame geometry — a stale outline on a moved object is
+    # worse than no outline.
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50, mask=_MASK_A)], timestamp=0.0)
+    tracks = tracker.update([_det(12, 12, 52, 52)], timestamp=0.1)
+    assert tracks[0].mask_xy is None
+
+
+# --- Traffic-light state debounce ---
+
+def _light_det(state):
+    return _det(10, 10, 30, 70, cls=ObjectClass.TRAFFIC_LIGHT, light=state)
+
+
+def test_light_state_propagates_to_track():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracks = tracker.update([_light_det(TrafficLightState.RED)], timestamp=0.0)
+    assert tracks[0].light_state is TrafficLightState.RED
+
+
+def test_light_state_updates_on_confident_reading():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_light_det(TrafficLightState.RED)], timestamp=0.0)
+    tracks = tracker.update([_light_det(TrafficLightState.GREEN)], timestamp=0.1)
+    assert tracks[0].light_state is TrafficLightState.GREEN
+
+
+def test_unknown_holds_last_confident_state():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_light_det(TrafficLightState.RED)], timestamp=0.0)
+    tracks = tracker.update([_light_det(TrafficLightState.UNKNOWN)], timestamp=0.1)
+    assert tracks[0].light_state is TrafficLightState.RED
+
+
+def test_prolonged_unknown_reverts_to_unknown():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_light_det(TrafficLightState.RED)], timestamp=0.0)
+    for i in range(1, 17):  # 16 consecutive UNKNOWN frames > 15-frame hold
+        tracks = tracker.update([_light_det(TrafficLightState.UNKNOWN)],
+                                timestamp=i * 0.033)
+    assert tracks[0].light_state is TrafficLightState.UNKNOWN
+
+
+def test_confident_reading_resets_unknown_hold():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_light_det(TrafficLightState.RED)], timestamp=0.0)
+    for i in range(1, 11):  # 10 UNKNOWNs — inside the hold window
+        tracker.update([_light_det(TrafficLightState.UNKNOWN)], timestamp=i * 0.033)
+    tracker.update([_light_det(TrafficLightState.GREEN)], timestamp=0.4)
+    # Another 10 UNKNOWNs must hold GREEN (counter was reset).
+    for i in range(1, 11):
+        tracks = tracker.update([_light_det(TrafficLightState.UNKNOWN)],
+                                timestamp=0.4 + i * 0.033)
+    assert tracks[0].light_state is TrafficLightState.GREEN
+
+
+def test_non_light_track_light_state_stays_none():
+    tracker = Tracker(iou_threshold=0.3, max_age=5)
+    tracker.update([_det(10, 10, 50, 50)], timestamp=0.0)
+    tracks = tracker.update([_det(10, 10, 50, 50)], timestamp=0.1)
+    assert tracks[0].light_state is None

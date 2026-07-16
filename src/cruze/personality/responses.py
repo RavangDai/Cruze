@@ -41,6 +41,26 @@ _CANNED: dict[str, list[str]] = {
         "Red octagon ahead — full stop territory.",
         "Stop sign. We're stopping.",
     ],
+    "brake_hard": [
+        "Brake now — closing fast on traffic ahead.",
+        "Hard brake — the gap is collapsing.",
+        "Brake hard. Too fast for this gap.",
+    ],
+    "brake_advised": [
+        "Ease off — we're gaining on the car ahead.",
+        "Coasting would be smart right about now.",
+        "Gap's shrinking. Lifting off keeps it civil.",
+    ],
+    "lane_departure": [
+        "Drifting {side} — nudge us back to centre.",
+        "We're wandering {side} out of lane.",
+        "Lane check: easing back from the {side} edge.",
+    ],
+    "cut_in": [
+        "Someone just merged in front — easing back.",
+        "New neighbour up front. Rebuilding the gap.",
+        "That merge was ambitious. Giving it room.",
+    ],
     "generic": [
         "All good up here.",
         "Nothing dramatic at the moment.",

@@ -1,0 +1,3 @@
+[submodule "reference/vision_pilot"]
+	path = reference/vision_pilot
+	url = https://github.com/autowarefoundation/vision_pilot

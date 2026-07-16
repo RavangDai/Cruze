@@ -139,3 +139,111 @@ async def test_critical_event_has_shorter_cooldown():
     engine._cooldowns["fcw"] = time.monotonic() - 4.0  # 4 s ago < 5
     events2 = engine._evaluate(scene)
     assert not any(e.kind == "fcw" for e in events2)
+
+
+# --- IDM brake events ---
+
+def _engine(**overrides) -> EventEngine:
+    return EventEngine(_make_config(event_cooldown_s=0.0, **overrides), EventBus())
+
+
+def _accel_scene(accel) -> Scene:
+    return Scene(
+        vehicle_state=VehicleState(speed_mps=15.0),
+        required_accel_mps2=accel,
+    )
+
+
+def test_brake_hard_event_is_critical():
+    events = _engine()._evaluate(_accel_scene(-6.0))
+    hard = [e for e in events if e.kind == "brake_hard"]
+    assert len(hard) == 1
+    assert hard[0].level == EventLevel.CRITICAL
+    assert hard[0].context["accel_mps2"] == -6.0
+    assert not any(e.kind == "brake_advised" for e in events)
+
+
+def test_brake_advised_event_is_warning():
+    events = _engine()._evaluate(_accel_scene(-4.0))
+    advised = [e for e in events if e.kind == "brake_advised"]
+    assert len(advised) == 1
+    assert advised[0].level == EventLevel.WARNING
+    assert not any(e.kind == "brake_hard" for e in events)
+
+
+def test_no_brake_events_in_comfort_zone():
+    events = _engine()._evaluate(_accel_scene(-1.0))
+    assert not any(e.kind in ("brake_hard", "brake_advised") for e in events)
+
+
+# --- Cut-in detection ---
+
+def _lead_scene(track_id, distance_m, ts) -> Scene:
+    lead = Track(
+        track_id=track_id,
+        bbox=BBox(610, 300, 670, 400),
+        cls=ObjectClass.CAR,
+        distance_m=distance_m,
+        closing_speed_mps=0.0,
+    )
+    return Scene(
+        timestamp=ts,
+        tracks=(lead,),
+        vehicle_state=VehicleState(speed_mps=15.0),
+        lead_track=lead,
+    )
+
+
+def test_cut_in_fires_on_closer_new_lead():
+    engine = _engine()
+    t0 = time.monotonic()
+    engine._evaluate(_lead_scene(track_id=1, distance_m=40.0, ts=t0))
+    events = engine._evaluate(_lead_scene(track_id=2, distance_m=25.0, ts=t0 + 0.1))
+    cut = [e for e in events if e.kind == "cut_in"]
+    assert len(cut) == 1
+    assert cut[0].level == EventLevel.NOTICE
+    assert cut[0].context["distance_m"] == 25.0
+
+
+def test_cut_in_ignores_same_lead():
+    engine = _engine()
+    t0 = time.monotonic()
+    engine._evaluate(_lead_scene(track_id=1, distance_m=40.0, ts=t0))
+    events = engine._evaluate(_lead_scene(track_id=1, distance_m=25.0, ts=t0 + 0.1))
+    assert not any(e.kind == "cut_in" for e in events)
+
+
+def test_cut_in_ignores_stale_previous_scene():
+    engine = _engine()
+    t0 = time.monotonic()
+    engine._evaluate(_lead_scene(track_id=1, distance_m=40.0, ts=t0))
+    # 5 s gap between scenes → comparing leads is meaningless.
+    events = engine._evaluate(_lead_scene(track_id=2, distance_m=25.0, ts=t0 + 5.0))
+    assert not any(e.kind == "cut_in" for e in events)
+
+
+# --- Lane departure ---
+
+def _ldw_scene(cte_m) -> Scene:
+    from cruze.core.types import Lanes
+
+    return Scene(
+        vehicle_state=VehicleState(speed_mps=15.0),
+        lanes=Lanes(cte_m=cte_m),
+    )
+
+
+def test_lane_departure_right_side():
+    events = _engine()._evaluate(_ldw_scene(cte_m=0.7))
+    ldw = [e for e in events if e.kind == "lane_departure"]
+    assert len(ldw) == 1
+    assert ldw[0].level == EventLevel.WARNING
+    assert ldw[0].context["side"] == "right"
+    assert ldw[0].context["cte_m"] == 0.7
+
+
+def test_lane_departure_left_side():
+    events = _engine()._evaluate(_ldw_scene(cte_m=-0.7))
+    ldw = [e for e in events if e.kind == "lane_departure"]
+    assert len(ldw) == 1
+    assert ldw[0].context["side"] == "left"

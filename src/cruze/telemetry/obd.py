@@ -50,7 +50,6 @@ class OBDReader:
         self._poll_interval = poll_interval_s
         self._simulated = cfg.simulated or cfg.obd_port == "sim"
         self._connection = None
-        self._speed_mps: float | None = None
         self._source = "simulated" if self._simulated else "obd"
 
     def connect(self) -> bool:

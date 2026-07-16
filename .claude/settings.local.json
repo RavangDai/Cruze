@@ -16,7 +16,9 @@
       "Bash(python -m pytest tests/ -q)",
       "Bash(timeout 20 python -m cruze --hardware desktop --no-camera --log-level INFO)",
       "Bash(timeout 25 python -m cruze --hardware desktop --no-camera --log-level DEBUG)",
-      "Bash(echo \"=== exit code $? ===\")"
+      "Bash(echo \"=== exit code $? ===\")",
+      "Read(//c/Users/bibek/.claude/plugins/cache/claude-plugins-official/superpowers/5.1.0/skills/brainstorming/**)",
+      "Bash(scripts/start-server.sh --project-dir \"/c/Users/bibek/Personal Projects/Cruze\")"
     ]
   }
 }
