@@ -81,3 +81,37 @@ def test_lanes_holds_lane_lines():
     assert scene.lanes.left == left
     assert scene.lanes.right is None
     assert scene.lanes.frame_id == 7
+
+
+# --- EgoEstimate and ego fields additions (Task 3) ---
+
+from cruze.core.types import EgoEstimate
+from cruze.core.bus import Channel
+
+
+def test_ego_estimate_defaults():
+    ego = EgoEstimate()
+    assert ego.cipo_boxes == ()
+    assert ego.ego_path is None
+    assert ego.cipo_distance_m is None
+    assert ego.road_curvature_1pm is None
+    assert ego.cipo_flag is None
+
+
+def test_ego_estimate_carries_boxes():
+    d = Detection(BBox(0, 0, 1, 1), 0.9, ObjectClass.CAR)
+    ego = EgoEstimate(cipo_boxes=(d,), cipo_distance_m=42.0, cipo_flag=True)
+    assert ego.cipo_boxes[0].cls is ObjectClass.CAR
+    assert ego.cipo_distance_m == 42.0
+
+
+def test_scene_ego_fields_default_none():
+    s = Scene()
+    assert s.ego_path is None
+    assert s.road_curvature_1pm is None
+    assert s.cipo_distance_m is None
+    assert s.cipo_flag is None
+
+
+def test_channel_ego_constant():
+    assert Channel.PERCEPTION_EGO == "perception.ego"

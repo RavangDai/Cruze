@@ -153,6 +153,24 @@ class Lanes:
 
 
 @dataclass(frozen=True)
+class EgoEstimate:
+    """Per-frame bundle of vision_pilot ONNX net outputs (raw, pre-fusion).
+    Mirrors vision_pilot's InferenceFrameResult. Any field may be None/empty
+    when its net is disabled or produced no output this frame."""
+
+    timestamp: float = field(default_factory=time.monotonic)
+    frame_id: int = 0
+    # AutoSpeed vehicle boxes — CIPO/lead candidates (lead SELECTION is SP3).
+    cipo_boxes: tuple[Detection, ...] = ()
+    # AutoSteer ego-path polyline in raw image px, bottom-first; None if masked out.
+    ego_path: tuple[tuple[float, float], ...] | None = None
+    # AutoDrive scalars (domain-converted). None until the 2-frame buffer fills.
+    cipo_distance_m: float | None = None
+    road_curvature_1pm: float | None = None
+    cipo_flag: bool | None = None
+
+
+@dataclass(frozen=True)
 class Frame:
     """Raw camera frame off the wire."""
 
@@ -198,6 +216,12 @@ class Scene:
     # needed, None when ego speed is unknown. Computed by SceneAssembler so
     # the HUD corridor colour and spoken events derive from the same number.
     required_accel_mps2: float | None = None
+    # vision_pilot ONNX net outputs, folded from the PERCEPTION_EGO bundle by
+    # SceneAssembler. All None when the nets are disabled (the default).
+    ego_path: tuple[tuple[float, float], ...] | None = None
+    road_curvature_1pm: float | None = None
+    cipo_distance_m: float | None = None
+    cipo_flag: bool | None = None
 
 
 @dataclass(frozen=True)
