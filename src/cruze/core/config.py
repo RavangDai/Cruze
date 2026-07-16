@@ -64,6 +64,23 @@ class PerceptionConfig:
     # Downward tilt of the camera in degrees (0 = level with the road).
     camera_pitch_deg: float = 0.0
 
+    # --- vision_pilot ONNX nets (SP2). All OFF by default; a hardware profile
+    # (config/hardware/vision_pilot.yaml) turns them on. ---
+    onnx_provider: str = "cpu"           # cpu | cuda | tensorrt (shared EP)
+    autospeed_enabled: bool = False
+    autosteer_enabled: bool = False
+    autodrive_enabled: bool = False
+    autospeed_model_path: str = "models/autospeed_fp32.onnx"
+    autosteer_model_path: str = "models/autosteer_fp32.onnx"
+    autodrive_model_path: str = "models/autodrive_fp32.onnx"
+    autospeed_conf_threshold: float = 0.6   # vision_pilot default
+    autospeed_iou_threshold: float = 0.45   # vision_pilot NMS default
+    # AutoDrive BEV homography (raw px → 1024x512). Camera-specific — see spec §11.
+    autodrive_homography_path: str = "calibration/vision_pilot_C.yaml"
+    # raw curvature → 1/m. Empirical scale (pin exact value from upstream).
+    autodrive_curv_scale: float = 1.0
+    autodrive_flag_threshold: float = 0.5   # CIPO in-path probability cutoff
+
 
 @dataclass
 class TelemetryConfig:

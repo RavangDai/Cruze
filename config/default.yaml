@@ -19,6 +19,19 @@ perception:
   latency_budget_ms: 50.0
   camera_height_m: 1.2     # lens height above road surface (metres)
   camera_pitch_deg: 0.0    # positive = tilted down
+  # vision_pilot ONNX nets (SP2) — all off by default; see config/hardware/vision_pilot.yaml.
+  onnx_provider: cpu            # cpu | cuda | tensorrt
+  autospeed_enabled: false
+  autosteer_enabled: false
+  autodrive_enabled: false
+  autospeed_model_path: models/autospeed_fp32.onnx
+  autosteer_model_path: models/autosteer_fp32.onnx
+  autodrive_model_path: models/autodrive_fp32.onnx
+  autospeed_conf_threshold: 0.6
+  autospeed_iou_threshold: 0.45
+  autodrive_homography_path: calibration/vision_pilot_C.yaml
+  autodrive_curv_scale: 1.0
+  autodrive_flag_threshold: 0.5
 
 telemetry:
   obd_port: auto
