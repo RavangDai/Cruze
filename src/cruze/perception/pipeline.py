@@ -145,7 +145,7 @@ class PerceptionService:
                 self._frame_count, avg, self._drop_count,
             )
 
-    def _analyze(self, frame: Frame):
+    def _analyze(self, frame: Frame) -> tuple[list[Detection], lane_mod.LaneResult | None, EgoEstimate | None]:
         """All CPU-bound classical/ML work for one frame — runs in the executor."""
         detections = self._detector.detect(frame)
         detections = lights_mod.annotate_lights(detections, frame.image)

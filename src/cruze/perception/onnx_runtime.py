@@ -20,7 +20,12 @@ _PROVIDER_MAP: dict[str, list[str]] = {
 def select_providers(provider: str, available: list[str]) -> list[str]:
     """Ordered EP list for the requested provider, filtered to what's installed,
     always ending in CPU. Unknown provider → CPU. Logs a warning on fallback."""
-    wanted = _PROVIDER_MAP.get(provider.lower(), ["CPUExecutionProvider"])
+    key = provider.lower()
+    if key not in _PROVIDER_MAP:
+        logger.warning(
+            "ONNX provider '%s' not recognized (typo in config?); falling back to CPU", provider
+        )
+    wanted = _PROVIDER_MAP.get(key, ["CPUExecutionProvider"])
     chosen = [p for p in wanted if p in available]
     if "CPUExecutionProvider" not in chosen:
         chosen.append("CPUExecutionProvider")

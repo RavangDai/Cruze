@@ -4,15 +4,12 @@ the spec §11 — defaults OFF, the vendored C only fits vision_pilot's camera."
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 import numpy as np
 
 from cruze.perception import preprocess
 from cruze.perception.onnx_runtime import OnnxSession
-
-logger = logging.getLogger(__name__)
 
 # AutoDrive normalised-distance full scale (vision_pilot D_MAX_M, empirical).
 _D_MAX_M = 150.0

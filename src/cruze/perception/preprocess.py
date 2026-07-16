@@ -77,7 +77,7 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou_thres: float) -> list[int]:
         xx2 = np.minimum(x2[i], x2[order[1:]])
         yy2 = np.minimum(y2[i], y2[order[1:]])
         inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+        iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)  # epsilon avoids 0/0 for zero-area boxes
         order = order[1:][iou <= iou_thres]
     return keep
 
@@ -101,7 +101,7 @@ def preprocess_crop2_1(image_bgr: np.ndarray) -> tuple[np.ndarray, float, float,
     crop_top, sx, sy = crop_resize_params(h, w)
     cropped = image_bgr[crop_top:h, 0:w]
     resized = cv2.resize(cropped, (NET_W, NET_H), interpolation=cv2.INTER_LINEAR)
-    rgb01 = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    rgb01 = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # uint8 → [0,1]
     return chw_from_rgb01(rgb01, imagenet=False), sx, sy, crop_top
 
 
@@ -112,5 +112,5 @@ def preprocess_bev(image_bgr: np.ndarray, homography: np.ndarray) -> np.ndarray:
         image_bgr, homography, (NET_W, NET_H),
         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101,
     )
-    rgb01 = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    rgb01 = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # uint8 → [0,1]
     return chw_from_rgb01(rgb01, imagenet=True)

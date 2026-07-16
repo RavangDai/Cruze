@@ -10,9 +10,33 @@ class _FakeAutoSpeed:
         return (Detection(BBox(0, 0, 10, 10), 0.9, ObjectClass.CAR),)
 
 
+class _FailingAutoSpeed:
+    def infer(self, chw, sx, sy, crop_top):
+        raise ValueError("boom")
+
+
+class _FakeAutoSteer:
+    def infer(self, chw, sx, sy, crop_top):
+        return ((0.0, 100.0), (0.0, 50.0))
+
+
 def test_infer_none_when_no_nets():
     assert vn.VisionNets().infer(Frame(image=None)) is None
     assert vn.VisionNets().any_enabled is False
+
+
+def test_infer_degrades_when_one_net_raises(monkeypatch):
+    """A failing AutoSpeed must not drop the whole frame: infer() still
+    returns an EgoEstimate, with only the failing net's output empty and the
+    healthy AutoSteer's output intact (CLAUDE.md graceful degradation)."""
+    monkeypatch.setattr(vn.preprocess, "preprocess_crop2_1",
+                        lambda img: (np.zeros((1, 3, 512, 1024), np.float32), 1.25, 1.25, 80))
+    nets = vn.VisionNets(autospeed=_FailingAutoSpeed(), autosteer=_FakeAutoSteer())
+    frame = Frame(image=np.zeros((720, 1280, 3), np.uint8), frame_id=9)
+    ego = nets.infer(frame)
+    assert ego is not None
+    assert ego.cipo_boxes == ()
+    assert ego.ego_path == ((0.0, 100.0), (0.0, 50.0))
 
 
 def test_infer_bundles_autospeed(monkeypatch):

@@ -22,3 +22,10 @@ def test_tensorrt_prefers_trt_then_cuda():
 
 def test_unknown_provider_is_cpu():
     assert select_providers("bogus", ["CPUExecutionProvider"]) == ["CPUExecutionProvider"]
+
+
+def test_unknown_provider_logs_warning(caplog):
+    with caplog.at_level("WARNING"):
+        got = select_providers("bogus", ["CPUExecutionProvider"])
+    assert got == ["CPUExecutionProvider"]
+    assert any("bogus" in rec.message for rec in caplog.records)

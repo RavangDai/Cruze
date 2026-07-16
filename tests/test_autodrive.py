@@ -40,8 +40,13 @@ def test_flag_below_threshold_is_false(monkeypatch):
 
 
 def test_load_homography(tmp_path):
+    # Non-symmetric matrix so a row/column-major reshape bug would be caught:
+    # row-major reshape of [1..9] puts 2 at [0,1] and 4 at [1,0]; a
+    # column-major bug would swap them.
     p = tmp_path / "C.yaml"
-    p.write_text("C: [1, 0, 0, 0, 1, 0, 0, 0, 1]")
+    p.write_text("C: [1, 2, 3, 4, 5, 6, 7, 8, 9]")
     H = ad.load_homography(str(p))
     assert H.shape == (3, 3)
     assert H[0, 0] == pytest.approx(1.0)
+    assert H[0, 1] == pytest.approx(2.0)
+    assert H[1, 0] == pytest.approx(4.0)

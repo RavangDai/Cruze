@@ -3,15 +3,11 @@ as a CIPO/lead candidate source. Emits Detections in raw-frame pixels."""
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from cruze.core.types import BBox, Detection, ObjectClass
 from cruze.perception import preprocess
 from cruze.perception.onnx_runtime import OnnxSession
-
-logger = logging.getLogger(__name__)
 
 # AutoSpeed class-id → ObjectClass. Taxonomy pinned at implementation from the
 # ONNX metadata (C-4 = num_classes) + the upstream auto_speed repo; unknown ids
@@ -41,5 +37,5 @@ class AutoSpeedEstimator:
             x1, y1 = preprocess.unmap_point(boxes[i, 0], boxes[i, 1], sx, sy, crop_top)
             x2, y2 = preprocess.unmap_point(boxes[i, 2], boxes[i, 3], sx, sy, crop_top)
             cls = self._class_map.get(int(class_ids[i]), ObjectClass.UNKNOWN)
-            out.append(Detection(BBox(x1, y1, x2, y2), float(scores[i]), cls))
+            out.append(Detection(BBox(float(x1), float(y1), float(x2), float(y2)), float(scores[i]), cls))
         return tuple(out)

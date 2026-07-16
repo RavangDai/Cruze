@@ -17,10 +17,18 @@ class VisionNets:
         self._autospeed = autospeed
         self._autosteer = autosteer
         self._autodrive = autodrive
+        # Failure keys already logged once — avoids per-frame log spam when a
+        # net/preprocessing fault persists (e.g. cv2 missing, weight mismatch).
+        self._logged_failures: set[str] = set()
 
     @property
     def any_enabled(self) -> bool:
         return any((self._autospeed, self._autosteer, self._autodrive))
+
+    def _log_failure_once(self, key: str, msg: str) -> None:
+        if key not in self._logged_failures:
+            self._logged_failures.add(key)
+            logger.exception(msg)
 
     def infer(self, frame: Frame) -> EgoEstimate | None:
         if not self.any_enabled:
@@ -30,16 +38,47 @@ class VisionNets:
         dist = curv = flag = None
 
         if self._autospeed is not None or self._autosteer is not None:
-            chw, sx, sy, crop_top = preprocess.preprocess_crop2_1(frame.image)
-            if self._autospeed is not None:
-                cipo_boxes = self._autospeed.infer(chw, sx, sy, crop_top)
-            if self._autosteer is not None:
-                ego_path = self._autosteer.infer(chw, sx, sy, crop_top)
+            # Graceful degradation: a failure here (missing cv2, bad frame,
+            # etc.) must not drop the whole perception frame — skip both nets
+            # this cycle and leave their outputs at the defaults above.
+            shared = None
+            try:
+                shared = preprocess.preprocess_crop2_1(frame.image)
+            except Exception:
+                self._log_failure_once(
+                    "preprocess",
+                    "VisionNets: crop-2:1 preprocessing failed — AutoSpeed/AutoSteer skipped this frame",
+                )
+
+            if shared is not None:
+                chw, sx, sy, crop_top = shared
+                if self._autospeed is not None:
+                    try:
+                        cipo_boxes = self._autospeed.infer(chw, sx, sy, crop_top)
+                    except Exception:
+                        self._log_failure_once(
+                            "autospeed",
+                            "VisionNets: AutoSpeed inference failed — degraded to empty this frame",
+                        )
+                if self._autosteer is not None:
+                    try:
+                        ego_path = self._autosteer.infer(chw, sx, sy, crop_top)
+                    except Exception:
+                        self._log_failure_once(
+                            "autosteer",
+                            "VisionNets: AutoSteer inference failed — degraded to empty this frame",
+                        )
 
         if self._autodrive is not None:
-            res = self._autodrive.infer(frame.image)
-            if res is not None:
-                dist, curv, flag = res.cipo_distance_m, res.road_curvature_1pm, res.cipo_flag
+            try:
+                res = self._autodrive.infer(frame.image)
+                if res is not None:
+                    dist, curv, flag = res.cipo_distance_m, res.road_curvature_1pm, res.cipo_flag
+            except Exception:
+                self._log_failure_once(
+                    "autodrive",
+                    "VisionNets: AutoDrive inference failed — degraded to empty this frame",
+                )
 
         return EgoEstimate(
             timestamp=frame.timestamp, frame_id=frame.frame_id,
