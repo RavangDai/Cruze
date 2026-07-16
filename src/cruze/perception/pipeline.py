@@ -22,7 +22,7 @@ import time
 from typing import TYPE_CHECKING
 
 from cruze.core.bus import Channel, EventBus
-from cruze.core.types import Detection, Frame, Lanes
+from cruze.core.types import Detection, EgoEstimate, Frame, Lanes
 from cruze.perception import depth as depth_mod
 from cruze.perception import lane as lane_mod
 from cruze.perception import lights as lights_mod
@@ -88,10 +88,12 @@ class PerceptionService:
         Pre-loaded Detector instance (use perception.detector.load()).
     """
 
-    def __init__(self, cfg: "Config", bus: EventBus, detector: Detector) -> None:
+    def __init__(self, cfg: "Config", bus: EventBus, detector: Detector,
+                 vision_nets=None) -> None:
         self._cfg = cfg
         self._bus = bus
         self._detector = detector
+        self._vision_nets = vision_nets
         self._tracker = Tracker(
             iou_threshold=cfg.perception.iou_threshold,
             max_age=cfg.perception.max_track_age,
@@ -143,7 +145,7 @@ class PerceptionService:
                 self._frame_count, avg, self._drop_count,
             )
 
-    def _analyze(self, frame: Frame) -> tuple[list[Detection], lane_mod.LaneResult | None]:
+    def _analyze(self, frame: Frame):
         """All CPU-bound classical/ML work for one frame — runs in the executor."""
         detections = self._detector.detect(frame)
         detections = lights_mod.annotate_lights(detections, frame.image)
@@ -152,12 +154,13 @@ class PerceptionService:
             if self._cfg.perception.lane_detection_enabled
             else None
         )
-        return detections, lane_result
+        ego = self._vision_nets.infer(frame) if self._vision_nets is not None else None
+        return detections, lane_result, ego
 
     async def _process_frame(self, frame: Frame) -> None:
         # One executor hop for detector + light state + lanes so no CPU-bound
         # work ever blocks the event loop.
-        detections, lane_result = await asyncio.get_event_loop().run_in_executor(
+        detections, lane_result, ego = await asyncio.get_event_loop().run_in_executor(
             None, self._analyze, frame
         )
 
@@ -207,6 +210,9 @@ class PerceptionService:
 
         tracks = self._tracker.update(detections)
         await self._bus.publish(Channel.PERCEPTION_TRACKS, tracks)
+
+        if ego is not None:
+            await self._bus.publish(Channel.PERCEPTION_EGO, ego)
 
     def _smoothed_cte(
         self, lane_result: lane_mod.LaneResult, frame: Frame, horizon_y: float | None

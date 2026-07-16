@@ -32,6 +32,7 @@ from cruze.perception.camera import CameraService
 from cruze.perception import depth as depth_mod
 from cruze.perception.detector import load as load_detector
 from cruze.perception.pipeline import PerceptionService
+from cruze.perception.vision_nets import build_vision_nets
 from cruze.telemetry.vehicle_state import VehicleStateService
 from cruze.reasoning.scene import SceneAssembler
 from cruze.reasoning.events import EventEngine
@@ -80,7 +81,7 @@ class Orchestrator:
             model_path=cfg.perception.model_path,
             confidence_threshold=cfg.perception.confidence_threshold,
         )
-        perception_svc = PerceptionService(cfg, bus, detector)
+        perception_svc = PerceptionService(cfg, bus, detector, vision_nets=build_vision_nets(cfg))
 
         telemetry_svc = VehicleStateService(cfg, bus)
         scene_svc = SceneAssembler(cfg, bus, image_width=cfg.camera.width)
