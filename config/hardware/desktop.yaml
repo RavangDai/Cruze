@@ -28,6 +28,7 @@ voice:
 
 hmi:
   enabled: true
+  backend: opencv          # native OpenCV window on the desktop, not the web dashboard
 
 logging:
   level: DEBUG
