@@ -21,7 +21,7 @@ import time
 from typing import TYPE_CHECKING
 
 from cruze.core.bus import Channel, EventBus
-from cruze.core.types import Lanes, ObjectClass, Scene, Track, VehicleState
+from cruze.core.types import EgoEstimate, Lanes, ObjectClass, Scene, Track, VehicleState
 from cruze.reasoning import threat
 
 if TYPE_CHECKING:
@@ -52,6 +52,10 @@ _LANE_CENTRE_FRACTION = 0.35
 # still the freshest output available (they ship with the same frame's tracks).
 _LANES_MAX_AGE_S = 0.5
 
+# EgoEstimate older than this is dropped from the Scene — same rationale and
+# window as lanes: stale neural-net geometry would mislead downstream.
+_EGO_MAX_AGE_S = 0.5
+
 
 class SceneAssembler:
     """
@@ -74,6 +78,8 @@ class SceneAssembler:
         self._latest_vehicle_state = VehicleState()
         self._latest_lanes: Lanes | None = None
         self._lanes_seen_at = 0.0  # monotonic arrival time of the last Lanes
+        self._latest_ego: EgoEstimate | None = None
+        self._ego_seen_at = 0.0  # monotonic arrival time of the last EgoEstimate
         self._running = False
 
     async def run(self) -> None:
@@ -81,6 +87,7 @@ class SceneAssembler:
         tracks_q = self._bus.subscribe(Channel.PERCEPTION_TRACKS, maxsize=4)
         state_q = self._bus.subscribe(Channel.TELEMETRY_VEHICLE_STATE, maxsize=4)
         lanes_q = self._bus.subscribe(Channel.PERCEPTION_LANES, maxsize=2)
+        ego_q = self._bus.subscribe(Channel.PERCEPTION_EGO, maxsize=2)
         logger.info("SceneAssembler started")
 
         async def drain_aux() -> None:
@@ -93,6 +100,10 @@ class SceneAssembler:
                 if not lanes_q.empty():
                     self._latest_lanes = lanes_q.get_nowait()
                     self._lanes_seen_at = time.monotonic()
+                    drained = True
+                if not ego_q.empty():
+                    self._latest_ego = ego_q.get_nowait()
+                    self._ego_seen_at = time.monotonic()
                     drained = True
                 if not drained:
                     await asyncio.sleep(0.01)
@@ -120,12 +131,19 @@ class SceneAssembler:
         lanes = self._latest_lanes
         if lanes is not None and now - self._lanes_seen_at > _LANES_MAX_AGE_S:
             lanes = None
+        ego = self._latest_ego
+        if ego is not None and now - self._ego_seen_at > _EGO_MAX_AGE_S:
+            ego = None
         scene = Scene(
             timestamp=now,
             tracks=tuple(tracks),
             vehicle_state=self._latest_vehicle_state,
             lead_track=lead,
             lanes=lanes,
+            ego_path=ego.ego_path if ego else None,
+            road_curvature_1pm=ego.road_curvature_1pm if ego else None,
+            cipo_distance_m=ego.cipo_distance_m if ego else None,
+            cipo_flag=ego.cipo_flag if ego else None,
         )
         # Attach the IDM urgency scalar here so the HUD corridor colour and
         # the event engine's brake warnings derive from the same number.

@@ -6,7 +6,7 @@ import pytest
 
 from cruze.core.bus import EventBus
 from cruze.core.config import Config
-from cruze.core.types import BBox, LaneLine, Lanes, ObjectClass, Track, VehicleState
+from cruze.core.types import BBox, EgoEstimate, LaneLine, Lanes, ObjectClass, Track, VehicleState
 from cruze.reasoning.scene import SceneAssembler
 
 
@@ -127,3 +127,26 @@ def test_lanes_dropped_when_detector_stops_producing():
 def test_no_lanes_means_none():
     sa = _assembler()
     assert sa._build_scene([]).lanes is None
+
+
+# --- Ego bundle fold-in ---
+
+def test_scene_folds_fresh_ego():
+    asm = SceneAssembler(Config(), EventBus(), image_width=1280)
+    asm._latest_ego = EgoEstimate(
+        cipo_distance_m=42.0, road_curvature_1pm=0.01, cipo_flag=True, ego_path=((1.0, 2.0),))
+    asm._ego_seen_at = time.monotonic()
+    scene = asm._build_scene([])
+    assert scene.cipo_distance_m == 42.0
+    assert scene.road_curvature_1pm == 0.01
+    assert scene.cipo_flag is True
+    assert scene.ego_path == ((1.0, 2.0),)
+
+
+def test_scene_drops_stale_ego():
+    asm = SceneAssembler(Config(), EventBus(), image_width=1280)
+    asm._latest_ego = EgoEstimate(cipo_distance_m=42.0)
+    asm._ego_seen_at = time.monotonic() - 5.0   # older than the freshness window
+    scene = asm._build_scene([])
+    assert scene.cipo_distance_m is None
+    assert scene.cipo_flag is None
