@@ -53,3 +53,14 @@ curl -L -o models/en_US-lessac-medium.onnx.json \
 
 Downloaded automatically by faster-whisper on first run to `~/.cache/huggingface/`.
 Recommended models: `base.en` (desktop), `tiny.en` (Pi 5).
+
+## vision_pilot ONNX weights (SP2)
+
+AutoSpeed / AutoSteer / AutoDrive weights are vendored (Apache-2.0) in the
+reference submodule. Copy them into `models/` (gitignored):
+
+    cp reference/vision_pilot/VisionPilot/modules/models/weights/*.onnx models/
+
+Upstream: autowarefoundation/{auto_speed,auto_steer,auto_drive}. `*_fp32.onnx`
+for desktop; `*_int8.onnx` for edge (Jetson/Pi). AutoDrive additionally needs a
+camera-matched homography in `calibration/vision_pilot_C.yaml`.
