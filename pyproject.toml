@@ -31,11 +31,15 @@ dashboard = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
 ]
+onnx = [
+    "onnxruntime>=1.17",   # use onnxruntime-gpu instead for cuda/tensorrt providers
+]
 all = [
     "cruze[vision]",
     "cruze[telemetry]",
     "cruze[voice]",
     "cruze[dashboard]",
+    "cruze[onnx]",
 ]
 dev = [
     "pytest>=8.0",
