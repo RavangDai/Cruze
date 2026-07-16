@@ -46,8 +46,12 @@ class CameraConfig:
 @dataclass
 class PerceptionConfig:
     backend: str = "yolo"            # yolo | tflite | tensorrt | stub
-    model_path: str = "models/yolov8n.pt"
+    # -seg weights add instance masks; box-only weights still work (no masks).
+    model_path: str = "models/yolov8n-seg.pt"
     confidence_threshold: float = 0.4
+    # Classical Canny+Hough lane detection (~3-5 ms at 720p); auto-degrades
+    # to no lanes when opencv is not installed.
+    lane_detection_enabled: bool = True
     # Max missed frames before a track is dropped.
     max_track_age: int = 5
     # Min IoU for a detection to be associated with an existing track.
@@ -90,6 +94,32 @@ class ReasoningConfig:
     # Per-event minimum interval between repeat warnings (seconds).
     event_cooldown_s: float = 8.0
 
+    # --- IDM (Intelligent Driver Model) longitudinal threat scoring ---
+    # Defaults are Treiber's canonical IDM values, matching VisionPilot's
+    # longitudinal planner.
+    idm_max_accel_mps2: float = 1.5       # a: comfortable acceleration
+    idm_comfort_decel_mps2: float = 3.0   # b: comfortable braking
+    idm_headway_s: float = 1.5            # T: desired time headway
+    idm_min_gap_m: float = 2.0            # s0: standstill minimum gap
+    idm_delta: float = 4.0                # δ: free-road acceleration exponent
+    # v0 fallback when no posted limit is known (≈ 60 mph US arterial/highway).
+    desired_speed_mps: float = 27.0
+    # Required decel beyond comfortable braking → advise the driver (WARNING).
+    idm_advise_decel_mps2: float = 3.0
+    # ≈ 0.5 g — emergency-braking territory → critical alert.
+    idm_hard_decel_mps2: float = 5.0
+
+    # --- Lane departure warning ---
+    # Half-car-width drift from lane centre (VisionPilot's LDW default).
+    ldw_cte_threshold_m: float = 0.5
+    # ≈ 18 mph gate: below this, large offsets are parking manoeuvres.
+    ldw_min_speed_mps: float = 8.0
+
+    # --- Cut-in detection ---
+    # New lead must be at least this much closer than the previous lead.
+    # Clears the ~7% monocular depth noise at typical 30-40 m following range.
+    cut_in_margin_m: float = 5.0
+
 
 @dataclass
 class VoiceConfig:
@@ -111,7 +141,8 @@ class VoiceConfig:
 @dataclass
 class HMIConfig:
     enabled: bool = True
-    # "web" = browser dashboard, "opencv" = legacy cv2 window, "none" = headless.
+    # "web" = browser dashboard, "opencv" = legacy cv2 window,
+    # "both" = web + cv2 window, "none" = headless.
     backend: str = "web"
     # Bind loopback by default; set 0.0.0.0 to reach the dashboard from a
     # tablet on the car's hotspot (no auth — LAN-trusted only).
@@ -123,6 +154,10 @@ class HMIConfig:
     overlay_alpha: float = 0.7
     show_track_ids: bool = True
     show_distance: bool = True
+    # Translucent instance-mask fills (needs -seg weights to have any effect).
+    show_masks: bool = True
+    # Lane-line overlay (needs perception.lane_detection_enabled).
+    show_lanes: bool = True
 
 
 @dataclass

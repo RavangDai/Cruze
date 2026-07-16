@@ -10,9 +10,12 @@ Subscribes to:
 FastAPI + uvicorn run in-process as asyncio tasks. fastapi/uvicorn/cv2 are
 optional: missing deps log a warning and the service idles (graceful
 degradation, same pattern as the cv2 HUD).
-"""
 
-from __future__ import annotations
+NOTE: no `from __future__ import annotations` here. PEP 563 stringifies
+annotations, and FastAPI then cannot resolve the lazily-imported WebSocket
+type on the /ws endpoint — it falls back to treating the parameter as a
+required query field and rejects every handshake with 1008/403.
+"""
 
 import asyncio
 import json
@@ -116,7 +119,7 @@ class DashboardService:
         self._running = True
         hmi = self._cfg.hmi
 
-        if not hmi.enabled or hmi.backend != "web":
+        if not hmi.enabled or hmi.backend not in ("web", "both"):
             logger.info("Dashboard: disabled (backend=%s)", hmi.backend)
             while self._running:
                 await asyncio.sleep(1.0)
@@ -147,11 +150,25 @@ class DashboardService:
             asyncio.create_task(self._pump_utterances(), name="dash-voice"),
         ]
         logger.info("Dashboard: serving on http://%s:%d", hmi.web_host, hmi.web_port)
+        failed = False
         try:
             await self._server.serve()
+        except (SystemExit, OSError) as exc:
+            # uvicorn calls sys.exit(1) when it cannot bind (typically the
+            # port is held by another Cruze instance). A dead dashboard must
+            # not take the co-pilot down — log and idle instead.
+            logger.warning(
+                "Dashboard: could not serve on %s:%d (%s) — disabled. "
+                "Is another Cruze instance already running?",
+                hmi.web_host, hmi.web_port, exc,
+            )
+            failed = True
         finally:
             for t in pumps:
                 t.cancel()
+        if failed:
+            while self._running:
+                await asyncio.sleep(1.0)
 
     async def stop(self) -> None:
         self._running = False

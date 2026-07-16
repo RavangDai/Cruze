@@ -21,7 +21,8 @@ import time
 from typing import TYPE_CHECKING
 
 from cruze.core.bus import Channel, EventBus
-from cruze.core.types import ObjectClass, Scene, Track, VehicleState
+from cruze.core.types import Lanes, ObjectClass, Scene, Track, VehicleState
+from cruze.reasoning import threat
 
 if TYPE_CHECKING:
     from cruze.core.config import Config
@@ -44,6 +45,13 @@ _VEHICLE_CLASSES = {
 # considered to be in the ego lane.
 _LANE_CENTRE_FRACTION = 0.35
 
+# Lanes unreceived for longer than this are dropped from the Scene: the lane
+# detector stopped or is disabled, and stale geometry would mislead. Measured
+# from MESSAGE ARRIVAL, not the frame capture timestamp — on a loaded CPU the
+# capture-to-publish latency alone can exceed this window while the lanes are
+# still the freshest output available (they ship with the same frame's tracks).
+_LANES_MAX_AGE_S = 0.5
+
 
 class SceneAssembler:
     """
@@ -64,24 +72,34 @@ class SceneAssembler:
         self._bus = bus
         self._image_width = image_width
         self._latest_vehicle_state = VehicleState()
+        self._latest_lanes: Lanes | None = None
+        self._lanes_seen_at = 0.0  # monotonic arrival time of the last Lanes
         self._running = False
 
     async def run(self) -> None:
         self._running = True
         tracks_q = self._bus.subscribe(Channel.PERCEPTION_TRACKS, maxsize=4)
         state_q = self._bus.subscribe(Channel.TELEMETRY_VEHICLE_STATE, maxsize=4)
+        lanes_q = self._bus.subscribe(Channel.PERCEPTION_LANES, maxsize=2)
         logger.info("SceneAssembler started")
 
-        async def drain_state() -> None:
-            """Keep vehicle state up to date in the background."""
+        async def drain_aux() -> None:
+            """Keep vehicle state and lanes up to date in the background."""
             while self._running:
-                try:
-                    state: VehicleState = await asyncio.wait_for(state_q.get(), timeout=0.5)
-                    self._latest_vehicle_state = state
-                except asyncio.TimeoutError:
-                    pass
+                drained = False
+                if not state_q.empty():
+                    self._latest_vehicle_state = state_q.get_nowait()
+                    drained = True
+                if not lanes_q.empty():
+                    self._latest_lanes = lanes_q.get_nowait()
+                    self._lanes_seen_at = time.monotonic()
+                    drained = True
+                if not drained:
+                    await asyncio.sleep(0.01)
+                else:
+                    await asyncio.sleep(0)
 
-        asyncio.ensure_future(drain_state())
+        asyncio.ensure_future(drain_aux())
 
         while self._running:
             try:
@@ -98,11 +116,22 @@ class SceneAssembler:
     def _build_scene(self, tracks: list[Track]) -> Scene:
         tracks = self._with_absolute_speed(tracks)
         lead = self._find_lead(tracks)
-        return Scene(
-            timestamp=time.monotonic(),
+        now = time.monotonic()
+        lanes = self._latest_lanes
+        if lanes is not None and now - self._lanes_seen_at > _LANES_MAX_AGE_S:
+            lanes = None
+        scene = Scene(
+            timestamp=now,
             tracks=tuple(tracks),
             vehicle_state=self._latest_vehicle_state,
             lead_track=lead,
+            lanes=lanes,
+        )
+        # Attach the IDM urgency scalar here so the HUD corridor colour and
+        # the event engine's brake warnings derive from the same number.
+        return dataclasses.replace(
+            scene,
+            required_accel_mps2=threat.idm_required_accel(scene, self._cfg.reasoning),
         )
 
     def _with_absolute_speed(self, tracks: list[Track]) -> list[Track]:

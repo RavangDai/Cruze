@@ -18,24 +18,60 @@ curved roads and adverse lighting.
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
+from typing import Any, NamedTuple
+
+from cruze.core.types import LaneLine
 
 logger = logging.getLogger(__name__)
-
-
-class LaneLine(NamedTuple):
-    x1: int
-    y1: int
-    x2: int
-    y2: int
 
 
 class LaneResult(NamedTuple):
     left: LaneLine | None
     right: LaneLine | None
+    # Curved-boundary polylines (pixel coords, bottom point first); None when
+    # the quadratic fit is under-determined or unstable.
+    left_poly: tuple[tuple[float, float], ...] | None = None
+    right_poly: tuple[tuple[float, float], ...] | None = None
 
 
-def detect_lanes(image: "Any", ) -> LaneResult:
+# Points sampled along each quadratic boundary: 8 keeps the max sagitta error
+# under ~2 px across a ~300 px ROI for road-curvature quadratics while costing
+# ~130 bytes per side on the wire.
+_POLY_SAMPLES = 8
+
+# Minimum pixels between the bottom row and the horizon before the ground
+# plane projection diverges (same floor as depth estimation).
+_MIN_HORIZON_OFFSET_PX = 8.0
+
+
+def cte_from_lane_positions(
+    left_x_px: float | None,
+    right_x_px: float | None,
+    image_w: int,
+    image_h: int,
+    focal_px: float,
+    camera_height_m: float,
+    horizon_y: float,
+) -> float | None:
+    """
+    Cross-track error: ego's lateral offset from the lane centre in metres,
+    measured at the bottom image row. Positive = ego right of centre (the
+    lane centre projects left of the image centre when ego sits right of it).
+
+    Ground-plane model shared with perception.depth: at the bottom row,
+    forward Z = focal·h_cam/(image_h − horizon_y), and one pixel spans
+    Z/focal metres laterally.
+    """
+    if left_x_px is None or right_x_px is None:
+        return None
+    if image_h - horizon_y < _MIN_HORIZON_OFFSET_PX:
+        return None
+    z_m = focal_px * camera_height_m / (image_h - horizon_y)
+    lane_centre_x = (left_x_px + right_x_px) / 2.0
+    return (image_w / 2.0 - lane_centre_x) * z_m / focal_px
+
+
+def detect_lanes(image: Any) -> LaneResult:
     """
     Detect left and right lane lines in an BGR image (numpy uint8 HxWxC).
 
@@ -84,10 +120,12 @@ def detect_lanes(image: "Any", ) -> LaneResult:
         if x2 == x1:
             continue
         slope = (y2 - y1) / (x2 - x1)
-        # Positive slope (image coords) = left lane; negative = right.
-        if 0.4 < slope < 2.5:
+        # Image coords put the origin top-left with y growing downward, so the
+        # LEFT boundary (bottom-left rising toward the vanishing point) has
+        # NEGATIVE slope and the right boundary positive.
+        if -2.5 < slope < -0.4:
             left_pts.extend([(x1, y1), (x2, y2)])
-        elif -2.5 < slope < -0.4:
+        elif 0.4 < slope < 2.5:
             right_pts.extend([(x1, y1), (x2, y2)])
 
     def _fit_lane(pts: list[tuple[int, int]]) -> LaneLine | None:
@@ -101,12 +139,38 @@ def detect_lanes(image: "Any", ) -> LaneResult:
             return None
         y_bottom = h
         y_top = roi_top_y
-        x_bottom = int((y_bottom - b) / m) if m != 0 else 0
-        x_top = int((y_top - b) / m) if m != 0 else 0
-        return LaneLine(x_bottom, y_bottom, x_top, y_top)
+        x_bottom = (y_bottom - b) / m if m != 0 else 0.0
+        x_top = (y_top - b) / m if m != 0 else 0.0
+        return LaneLine(float(x_bottom), float(y_bottom), float(x_top), float(y_top))
 
-    return LaneResult(_fit_lane(left_pts), _fit_lane(right_pts))
+    def _fit_poly(
+        pts: list[tuple[int, int]], line: LaneLine | None
+    ) -> tuple[tuple[float, float], ...] | None:
+        # A quadratic needs ≥3 Hough segments (6 endpoints) to be determined
+        # by more than noise; fewer points → straight-line fallback only.
+        if line is None or len(pts) < 6:
+            return None
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        try:
+            # x as a function of y — lanes are near-vertical in image space.
+            coeffs = np.polyfit(ys, xs, 2)
+        except (np.linalg.LinAlgError, ValueError):
+            return None
+        poly = np.poly1d(coeffs)
+        # Sanity gate: the quadratic's bottom point must agree with the
+        # robust straight fit; wilder disagreement means it latched onto
+        # outliers (shadows, other markings).
+        if abs(float(poly(h)) - line.x1) > 0.25 * w:
+            return None
+        sample_ys = np.linspace(h, roi_top_y, _POLY_SAMPLES)
+        return tuple((float(poly(y)), float(y)) for y in sample_ys)
 
-
-# Allow importing the type annotation without cv2 installed.
-from typing import Any  # noqa: E402
+    left_line = _fit_lane(left_pts)
+    right_line = _fit_lane(right_pts)
+    return LaneResult(
+        left_line,
+        right_line,
+        _fit_poly(left_pts, left_line),
+        _fit_poly(right_pts, right_line),
+    )

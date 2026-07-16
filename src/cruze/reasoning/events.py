@@ -17,7 +17,7 @@ import time
 from typing import TYPE_CHECKING
 
 from cruze.core.bus import Channel, EventBus
-from cruze.core.types import DrivingEvent, EventLevel, Scene
+from cruze.core.types import DrivingEvent, EventLevel, Scene, Track
 from cruze.reasoning import threat
 
 if TYPE_CHECKING:
@@ -42,6 +42,9 @@ class EventEngine:
         self._cfg = cfg
         self._bus = bus
         self._cooldowns: dict[str, float] = {}  # kind → last_fired_timestamp
+        # Previous scene's lead, kept for cut-in detection.
+        self._prev_lead: Track | None = None
+        self._prev_scene_ts: float = 0.0
         self._running = False
 
     async def run(self) -> None:
@@ -67,7 +70,24 @@ class EventEngine:
         now = time.monotonic()
         fired: list[DrivingEvent] = []
 
-        for kind, level, context in self._rules(scene):
+        rules = self._rules(scene)
+
+        # Cut-in needs cross-scene state, so it lives here rather than in
+        # the stateless _rules. Comparing leads across a pipeline stall
+        # (> 1 s between scenes) is meaningless — gate on scene recency.
+        if (
+            scene.timestamp - self._prev_scene_ts < 1.0
+            and threat.is_cut_in(self._prev_lead, scene.lead_track, self._cfg.reasoning)
+        ):
+            rules.append((
+                "cut_in",
+                EventLevel.NOTICE,
+                {"distance_m": round(scene.lead_track.distance_m, 1)},  # type: ignore[union-attr, arg-type]
+            ))
+        self._prev_lead = scene.lead_track
+        self._prev_scene_ts = scene.timestamp
+
+        for kind, level, context in rules:
             last = self._cooldowns.get(kind, 0.0)
             cooldown = self._cfg.reasoning.event_cooldown_s
             # Critical events use half the normal cooldown.
@@ -140,6 +160,33 @@ class EventEngine:
                 {
                     "distance_m": round(scene.lead_track.distance_m, 1),  # type: ignore
                 },
+            ))
+
+        # --- IDM braking bands (brake_hard is a safety event: CRITICAL
+        # level rides the halved cooldown in _evaluate) ---
+        accel = threat._scene_accel(scene, cfg)
+        if accel is not None and (
+            threat.is_brake_hard(scene, cfg) or threat.is_brake_advised(scene, cfg)
+        ):
+            context = {"accel_mps2": round(accel, 1)}
+            if scene.lead_track is not None:
+                if scene.lead_track.distance_m is not None:
+                    context["distance_m"] = round(scene.lead_track.distance_m, 1)
+                context["lead_class"] = scene.lead_track.cls.value
+            if threat.is_brake_hard(scene, cfg):
+                results.append(("brake_hard", EventLevel.CRITICAL, context))
+            else:
+                results.append(("brake_advised", EventLevel.WARNING, context))
+
+        # --- Lane departure ---
+        if threat.is_lane_departure(scene, cfg):
+            cte = scene.lanes.cte_m  # type: ignore[union-attr]
+            results.append((
+                "lane_departure",
+                EventLevel.WARNING,
+                # Positive CTE = ego right of centre = drifting toward the
+                # right boundary.
+                {"side": "right" if cte > 0 else "left", "cte_m": round(cte, 2)},  # type: ignore[operator, arg-type]
             ))
 
         # --- Stop sign ---

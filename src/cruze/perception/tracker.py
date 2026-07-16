@@ -24,9 +24,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from cruze.core.types import BBox, Detection, ObjectClass, Track
+from cruze.core.types import BBox, Detection, ObjectClass, Track, TrafficLightState
 
 logger = logging.getLogger(__name__)
+
+# Consecutive UNKNOWN light readings tolerated before a track's held state
+# reverts to UNKNOWN: ~0.5 s at 30 fps — one lamp blink/occlusion cycle plus
+# margin, so a briefly blocked light doesn't flicker in the HUD.
+_LIGHT_UNKNOWN_HOLD_FRAMES = 15
 
 
 class _DistanceKalman:
@@ -95,6 +100,10 @@ class _TrackState:
     kalman: _DistanceKalman | None = None
     age_missed: int = 0
     last_updated: float = field(default_factory=time.monotonic)
+    mask_xy: tuple[tuple[float, float], ...] | None = None
+    light_state: TrafficLightState | None = None
+    # Consecutive UNKNOWN readings while holding a confident light state.
+    light_unknown_count: int = 0
 
     def to_track(self) -> Track:
         return Track(
@@ -107,6 +116,8 @@ class _TrackState:
             ),
             age_missed=self.age_missed,
             timestamp=self.last_updated,
+            mask_xy=self.mask_xy,
+            light_state=self.light_state,
         )
 
 
@@ -244,6 +255,8 @@ class Tracker:
             cls=det.cls,
             kalman=_DistanceKalman(det.distance_m) if det.distance_m is not None else None,
             last_updated=now,
+            mask_xy=det.mask_xy,
+            light_state=det.light_state,
         )
 
     def _update_track(self, trk: _TrackState, det: Detection, now: float) -> None:
@@ -251,6 +264,10 @@ class Tracker:
         trk.bbox = det.bbox
         trk.age_missed = 0
         trk.last_updated = now
+        # Masks are per-frame geometry: always take the fresh outline, even if
+        # None — a stale outline on a moved object is worse than no outline.
+        trk.mask_xy = det.mask_xy
+        self._update_light_state(trk, det)
 
         if det.distance_m is None:
             return  # keep last filtered state; no measurement this frame
@@ -258,6 +275,20 @@ class Tracker:
             trk.kalman = _DistanceKalman(det.distance_m)
         elif dt > 0:
             trk.kalman.step(det.distance_m, dt)
+
+    @staticmethod
+    def _update_light_state(trk: _TrackState, det: Detection) -> None:
+        """Debounce lamp readings: hold the last confident state through brief
+        UNKNOWN gaps (occlusion, blur, LED blink) instead of flickering."""
+        if det.light_state is None:
+            return  # not a traffic light — leave None
+        if det.light_state is not TrafficLightState.UNKNOWN:
+            trk.light_state = det.light_state
+            trk.light_unknown_count = 0
+            return
+        trk.light_unknown_count += 1
+        if trk.light_unknown_count > _LIGHT_UNKNOWN_HOLD_FRAMES or trk.light_state is None:
+            trk.light_state = TrafficLightState.UNKNOWN
 
     @property
     def active_track_count(self) -> int:

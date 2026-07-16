@@ -34,6 +34,15 @@ class EventLevel(Enum):
     CRITICAL = "critical"
 
 
+class TrafficLightState(Enum):
+    """Lamp state of a detected traffic light. UNKNOWN = unlit/occluded/ambiguous."""
+
+    RED = "red"
+    YELLOW = "yellow"
+    GREEN = "green"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class BBox:
     """Bounding box in pixel coordinates (top-left origin)."""
@@ -82,6 +91,11 @@ class Detection:
     cls: ObjectClass
     # Distance estimate from monocular depth; None if not computed.
     distance_m: float | None = None
+    # Instance-mask outline polygon in image pixel coords, downsampled at the
+    # detector boundary; None for box-only backends/weights.
+    mask_xy: tuple[tuple[float, float], ...] | None = None
+    # Lamp state; set only for TRAFFIC_LIGHT detections, None otherwise.
+    light_state: TrafficLightState | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +116,40 @@ class Track:
     # Absolute ground speed estimate (ego speed − closing speed); None when
     # either input is unavailable. Valid for same-direction traffic only.
     speed_mps: float | None = None
+    # Latest instance-mask outline from the matched detection; None if the
+    # detector emits no masks or the track went unmatched this frame.
+    mask_xy: tuple[tuple[float, float], ...] | None = None
+    # Debounced lamp state; set only for TRAFFIC_LIGHT tracks.
+    light_state: TrafficLightState | None = None
+
+
+@dataclass(frozen=True)
+class LaneLine:
+    """One lane boundary as a pixel-space segment (bottom point first)."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+@dataclass(frozen=True)
+class Lanes:
+    """Per-frame lane detection result; either side may be None."""
+
+    left: LaneLine | None = None
+    right: LaneLine | None = None
+    timestamp: float = field(default_factory=time.monotonic)
+    frame_id: int = 0
+    # Curved boundary polylines in pixel coords, bottom point first; None
+    # when the quadratic fit was unavailable or unstable (straight LaneLine
+    # above remains the fallback).
+    left_poly: tuple[tuple[float, float], ...] | None = None
+    right_poly: tuple[tuple[float, float], ...] | None = None
+    # Ego lateral offset from the lane centre in metres, measured at the
+    # bottom image row via the ground-plane model; positive = ego right of
+    # centre. None when either boundary or camera geometry is missing.
+    cte_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +192,12 @@ class Scene:
     vehicle_state: VehicleState = field(default_factory=VehicleState)
     # Nearest lead vehicle (same lane, ahead) if any.
     lead_track: Track | None = None
+    # Latest fresh lane detection; None when unavailable or stale.
+    lanes: Lanes | None = None
+    # IDM-required longitudinal acceleration in m/s²; negative = braking
+    # needed, None when ego speed is unknown. Computed by SceneAssembler so
+    # the HUD corridor colour and spoken events derive from the same number.
+    required_accel_mps2: float | None = None
 
 
 @dataclass(frozen=True)

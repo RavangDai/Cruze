@@ -27,14 +27,20 @@ voice = [
     "openwakeword>=0.6",
     "anthropic>=0.30",
 ]
+dashboard = [
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+]
 all = [
     "cruze[vision]",
     "cruze[telemetry]",
     "cruze[voice]",
+    "cruze[dashboard]",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "httpx>=0.27",           # starlette TestClient; tests skip without it
 ]
 
 [project.scripts]
@@ -42,6 +48,11 @@ cruze = "cruze.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the dashboard frontend — setuptools excludes non-Python files by
+# default and webapp.py serves from <package>/web at runtime.
+"cruze.hmi" = ["web/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

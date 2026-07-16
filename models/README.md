@@ -6,17 +6,21 @@ Place model files here. They are excluded from git (see `.gitignore`).
 
 ```bash
 # Downloads automatically on first run via ultralytics:
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+python -c "from ultralytics import YOLO; YOLO('yolov8n-seg.pt')"
 # Then move the downloaded file here:
-mv yolov8n.pt models/
+mv yolov8n-seg.pt models/
 ```
 
 Or manually from https://github.com/ultralytics/assets/releases
 
 | File | Size | Use |
 |---|---|---|
-| `yolov8n.pt` | 6 MB | Desktop (fastest) |
-| `yolov8s.pt` | 22 MB | Desktop (better accuracy) |
+| `yolov8n-seg.pt` | 7 MB | Desktop default — boxes + instance masks |
+| `yolov8n.pt` | 6 MB | Boxes only (fastest; set `perception.model_path`) |
+| `yolov8s.pt` | 22 MB | Boxes only, better accuracy |
+
+Box-only weights remain fully supported: detections simply carry no
+`mask_xy` and both GUIs fall back to bracket/box rendering.
 
 ## TFLite (Raspberry Pi 5 + Hailo-8)
 

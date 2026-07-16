@@ -24,11 +24,13 @@ Cruze is a voice-activated, vision-first AI co-pilot for car dashboards. It watc
 
 Key types:
 - `BBox` — pixel bounding box with `.iou()`, `.width`, `.height`, `.cx`, `.cy`
-- `Detection` — single detector output: bbox + confidence + class + optional distance
-- `Track` — tracked object with stable ID, closing speed, distance
+- `Detection` — single detector output: bbox + confidence + class + optional distance, mask polygon (`mask_xy`), traffic-light state
+- `Track` — tracked object with stable ID, closing speed, distance, mask, debounced light state
+- `TrafficLightState` — RED / YELLOW / GREEN / UNKNOWN lamp state
+- `LaneLine` / `Lanes` — per-frame lane boundaries (either side may be None), plus curved `left_poly`/`right_poly` polylines and metre-space cross-track error `cte_m`
 - `Frame` — raw camera frame with timestamp and focal length
 - `VehicleState` — fused OBD + GPS + IMU snapshot
-- `Scene` — tracks + vehicle state + identified lead vehicle
+- `Scene` — tracks + vehicle state + identified lead vehicle + fresh lanes + `required_accel_mps2` (IDM urgency scalar; the HUD corridor colour and brake events both derive from it)
 - `DrivingEvent` — emitted by rule engine: kind (string), level (EventLevel), context dict
 - `Utterance` — what TTS should say: text + priority + interrupt flag
 
@@ -42,6 +44,7 @@ Key types:
 Channel.PERCEPTION_FRAME          raw camera frames
 Channel.PERCEPTION_DETECTIONS     list[Detection] per frame
 Channel.PERCEPTION_TRACKS         list[Track] per frame
+Channel.PERCEPTION_LANES          Lanes per frame (left/right LaneLine or None)
 Channel.TELEMETRY_VEHICLE_STATE   VehicleState snapshots
 Channel.REASONING_SCENE           Scene snapshots
 Channel.REASONING_EVENT           DrivingEvent
@@ -166,9 +169,9 @@ Run: `python -m pytest tests/`
 
 | Module | Budget | Notes |
 |---|---|---|
-| Full perception pipeline | 50 ms desktop / 25 ms Jetson | Configurable: `perception.latency_budget_ms` |
-| Detector | ~70% of budget | Biggest cost; TensorRT halves it |
-| Tracker + depth | ~20% of budget | Near-constant regardless of backend |
+| Full perception pipeline | 150 ms desktop (seg) / 25 ms Jetson | Configurable: `perception.latency_budget_ms`; advisory — over-budget logs, nothing dropped |
+| Detector | ~70% of budget | Biggest cost; -seg weights ≈ 1.5–2× box-only; TensorRT halves it |
+| Tracker + depth + lanes + light HSV | ~20% of budget | Near-constant regardless of backend |
 | Scene + event engine | < 5 ms | Pure Python, no ML |
 | TTS first-sentence | < 800 ms | Sentence-boundary buffering in `tts.py` |
 

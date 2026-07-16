@@ -200,3 +200,96 @@ def test_slow_lead_normal_traffic():
     # ego=15, closing=2 → lead_speed=13 > 0.6*13.4=8.04
     scene = _scene(ego_speed_mps=15.0, posted_limit_mps=13.4, lead_closing_mps=2.0)
     assert not threat.is_slow_lead(scene, _cfg())
+
+
+# --- idm_required_accel ---
+
+def test_idm_free_road_below_desired_speed_accelerates():
+    scene = _scene(no_lead=True, ego_speed_mps=10.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel is not None
+    assert 0.0 < accel <= 1.5  # bounded by idm_max_accel_mps2
+
+
+def test_idm_at_desired_speed_near_zero():
+    scene = _scene(no_lead=True, ego_speed_mps=27.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel == pytest.approx(0.0, abs=0.01)
+
+
+def test_idm_over_desired_speed_decelerates():
+    scene = _scene(no_lead=True, ego_speed_mps=35.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel < 0.0
+
+
+def test_idm_close_fast_lead_demands_hard_braking():
+    # v=25, gap 10 m, closing 8 m/s → interaction term dominates.
+    scene = _scene(lead_distance_m=10.0, lead_closing_mps=8.0,
+                   ego_speed_mps=25.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel < -5.0
+
+
+def test_idm_moderate_lead_lands_in_advise_band():
+    # v=20, gap 30 m, closing 5 m/s → uncomfortable but not emergency.
+    scene = _scene(lead_distance_m=30.0, lead_closing_mps=5.0,
+                   ego_speed_mps=20.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert -5.0 <= accel <= -3.0
+
+
+def test_idm_tiny_gap_no_division_blowup():
+    scene = _scene(lead_distance_m=0.1, lead_closing_mps=5.0,
+                   ego_speed_mps=20.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel == -10.0  # clamped at ~1 g physical braking limit
+
+
+def test_idm_none_when_ego_speed_unknown():
+    vs = VehicleState(speed_mps=None)
+    scene = Scene(vehicle_state=vs)
+    assert threat.idm_required_accel(scene, _cfg()) is None
+
+
+def test_idm_v0_falls_back_to_desired_speed():
+    # No posted limit → v0 = cfg.desired_speed_mps (27); at 27 → ~0.
+    scene = _scene(no_lead=True, ego_speed_mps=27.0, posted_limit_mps=None)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel == pytest.approx(0.0, abs=0.01)
+
+
+def test_idm_lead_without_distance_uses_free_term_only():
+    scene = _scene(lead_distance_m=None, lead_closing_mps=None,
+                   ego_speed_mps=10.0, posted_limit_mps=27.0)
+    accel = threat.idm_required_accel(scene, _cfg())
+    assert accel is not None
+    assert accel > 0.0
+
+
+# --- brake bands ---
+
+def test_brake_advised_in_band():
+    scene = Scene(required_accel_mps2=-4.0)
+    assert threat.is_brake_advised(scene, _cfg())
+    assert not threat.is_brake_hard(scene, _cfg())
+
+
+def test_brake_hard_below_band():
+    scene = Scene(required_accel_mps2=-6.0)
+    assert threat.is_brake_hard(scene, _cfg())
+    assert not threat.is_brake_advised(scene, _cfg())  # hard excludes advised
+
+
+def test_no_brake_event_in_comfort_zone():
+    scene = Scene(required_accel_mps2=-2.0)
+    assert not threat.is_brake_advised(scene, _cfg())
+    assert not threat.is_brake_hard(scene, _cfg())
+
+
+def test_brake_bands_recompute_when_accel_missing():
+    # Scene without precomputed accel → predicates fall back to IDM.
+    scene = _scene(lead_distance_m=10.0, lead_closing_mps=8.0,
+                   ego_speed_mps=25.0, posted_limit_mps=27.0)
+    assert scene.required_accel_mps2 is None
+    assert threat.is_brake_hard(scene, _cfg())

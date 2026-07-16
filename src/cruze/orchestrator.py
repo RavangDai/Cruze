@@ -40,6 +40,7 @@ from cruze.voice.wake import WakeWordService
 from cruze.voice.stt import STTService
 from cruze.voice.tts import TTSService
 from cruze.hmi.hud import HUDService
+from cruze.hmi.webapp import DashboardService
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +90,12 @@ class Orchestrator:
         stt_svc = STTService(cfg.voice, bus)
         tts_svc = TTSService(cfg.voice, bus)
         hud_svc = HUDService(cfg, bus)
+        dashboard_svc = DashboardService(cfg, bus)
 
         self._services = [
             camera_svc, perception_svc, telemetry_svc,
             scene_svc, event_svc, persona_svc,
-            wake_svc, stt_svc, tts_svc, hud_svc,
+            wake_svc, stt_svc, tts_svc, hud_svc, dashboard_svc,
         ]
 
         # --- Start tasks ---

@@ -1,10 +1,12 @@
 """SceneAssembler absolute-speed tests — no bus traffic needed."""
 
+import time
+
 import pytest
 
 from cruze.core.bus import EventBus
 from cruze.core.config import Config
-from cruze.core.types import BBox, ObjectClass, Track, VehicleState
+from cruze.core.types import BBox, LaneLine, Lanes, ObjectClass, Track, VehicleState
 from cruze.reasoning.scene import SceneAssembler
 
 
@@ -61,3 +63,67 @@ def test_lead_track_carries_absolute_speed():
     scene = sa._build_scene([_track(closing=5.0)])
     assert scene.lead_track is not None
     assert scene.lead_track.speed_mps == pytest.approx(25.0)
+
+
+# --- IDM required-accel attachment ---
+
+def test_required_accel_attached_for_closing_lead():
+    sa = _assembler(ego_speed=25.0)
+    scene = sa._build_scene([_track(closing=8.0, dist=10.0)])
+    assert scene.required_accel_mps2 is not None
+    assert scene.required_accel_mps2 < -5.0  # fast-closing 10 m gap = emergency
+
+
+def test_required_accel_none_without_ego_speed():
+    sa = _assembler(ego_speed=None)
+    scene = sa._build_scene([_track(closing=5.0)])
+    assert scene.required_accel_mps2 is None
+
+
+def test_required_accel_positive_on_free_road():
+    sa = _assembler(ego_speed=10.0)
+    scene = sa._build_scene([])
+    assert scene.required_accel_mps2 is not None
+    assert scene.required_accel_mps2 > 0.0
+
+
+# --- Lane fold-in ---
+
+def _lanes(age_s=0.0):
+    return Lanes(
+        left=LaneLine(100.0, 720.0, 550.0, 320.0),
+        right=LaneLine(1180.0, 720.0, 730.0, 320.0),
+        timestamp=time.monotonic() - age_s,
+    )
+
+
+def test_fresh_lanes_attached_to_scene():
+    sa = _assembler()
+    sa._latest_lanes = _lanes()
+    sa._lanes_seen_at = time.monotonic()
+    scene = sa._build_scene([])
+    assert scene.lanes is not None
+    assert scene.lanes.left.x1 == pytest.approx(100.0)
+
+
+def test_lanes_attached_despite_old_frame_timestamp():
+    """Regression: freshness was anchored to the frame CAPTURE timestamp, so
+    on a loaded CPU (perception latency > 0.5 s) every lane result was
+    silently dropped. Freshness must mean 'the detector is still producing',
+    i.e. message arrival time."""
+    sa = _assembler()
+    sa._latest_lanes = _lanes(age_s=2.0)  # frame captured 2 s ago
+    sa._lanes_seen_at = time.monotonic()  # ...but the message just arrived
+    assert sa._build_scene([]).lanes is not None
+
+
+def test_lanes_dropped_when_detector_stops_producing():
+    sa = _assembler()
+    sa._latest_lanes = _lanes()
+    sa._lanes_seen_at = time.monotonic() - 1.0  # nothing received for 1 s
+    assert sa._build_scene([]).lanes is None
+
+
+def test_no_lanes_means_none():
+    sa = _assembler()
+    assert sa._build_scene([]).lanes is None

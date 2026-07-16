@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from cruze.core.types import DrivingEvent, Scene, Track, Utterance, VehicleState
+from cruze.core.types import (
+    DrivingEvent,
+    LaneLine,
+    Lanes,
+    Scene,
+    Track,
+    Utterance,
+    VehicleState,
+)
 
 
 def _r(value: float | None, ndigits: int = 2) -> float | None:
@@ -26,6 +34,43 @@ def track_to_dict(t: Track) -> dict[str, Any]:
         "distance_m": _r(t.distance_m, 1),
         "closing_mps": _r(t.closing_speed_mps),
         "speed_mps": _r(t.speed_mps),
+        "light": t.light_state.value if t.light_state is not None else None,
+        # Flat [x1,y1,x2,y2,...] halves the JSON overhead vs nested pairs.
+        "mask": (
+            [round(coord, 1) for point in t.mask_xy for coord in point]
+            if t.mask_xy is not None else None
+        ),
+    }
+
+
+def _lane_line_to_list(line: LaneLine | None) -> list[float] | None:
+    if line is None:
+        return None
+    return [round(line.x1, 1), round(line.y1, 1), round(line.x2, 1), round(line.y2, 1)]
+
+
+# Defensive cap on polyline points per side (producer sends 8): bounds wire
+# size even if a future producer over-samples.
+_MAX_POLY_POINTS = 16
+
+
+def _poly_to_list(poly: tuple[tuple[float, float], ...] | None) -> list[float] | None:
+    if poly is None:
+        return None
+    return [
+        round(coord, 1) for point in poly[:_MAX_POLY_POINTS] for coord in point
+    ]
+
+
+def lanes_to_dict(lanes: Lanes | None) -> dict[str, Any] | None:
+    if lanes is None:
+        return None
+    return {
+        "left": _lane_line_to_list(lanes.left),
+        "right": _lane_line_to_list(lanes.right),
+        "left_poly": _poly_to_list(lanes.left_poly),
+        "right_poly": _poly_to_list(lanes.right_poly),
+        "cte_m": _r(lanes.cte_m),
     }
 
 
@@ -48,6 +93,9 @@ def scene_to_dict(s: Scene) -> dict[str, Any]:
         "tracks": [track_to_dict(t) for t in s.tracks],
         "lead_id": s.lead_track.track_id if s.lead_track is not None else None,
         "state": state_to_dict(s.vehicle_state),
+        "lanes": lanes_to_dict(s.lanes),
+        # IDM urgency scalar; the frontend colours the corridor with it.
+        "accel": _r(s.required_accel_mps2),
     }
 
 

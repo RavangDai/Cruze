@@ -1,3 +1,4 @@
+
 """GPS NMEA parsing tests — pure functions, no hardware."""
 
 import pytest

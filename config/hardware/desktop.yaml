@@ -9,7 +9,10 @@ camera:
 
 perception:
   backend: yolo
-  latency_budget_ms: 80.0   # laptops are slower than Jetson
+  # yolov8n-seg is ~1.5-2x yolov8n on CPU (~90-130 ms at 720p on a laptop);
+  # lanes + light HSV add ~5 ms. The budget is advisory — over-budget frames
+  # log at DEBUG and count in metrics, nothing is dropped.
+  latency_budget_ms: 150.0
 
 telemetry:
   simulated: true            # no OBD dongle on a laptop
