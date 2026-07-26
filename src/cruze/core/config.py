@@ -58,6 +58,17 @@ class PerceptionConfig:
     iou_threshold: float = 0.3
     # Latency budget for the full perception pipeline in milliseconds.
     latency_budget_ms: float = 50.0
+    # Rate the perception hot path actually runs at. The camera keeps
+    # publishing at camera.fps so the dashboard video stays smooth; frames
+    # arriving faster than this are skipped rather than queued. Also fixes
+    # AutoDrive's two-frame delta, which is nondeterministic when the bus
+    # silently drops frames. 0 = process every frame.
+    target_hz: float = 15.0
+    # Rate of the low-frequency context pass (YOLO: person / traffic light /
+    # stop sign). Vehicles come from AutoSpeed on every frame; these classes
+    # move slowly enough in image space that a few Hz is plenty, and it keeps
+    # a ~45 ms detector off the hot path. 0 = run it on every processed frame.
+    context_hz: float = 3.0
     # Camera mounting geometry for ground-plane distance estimation.
     # Height of the lens above the road surface (typical dash mount ≈ 1.2 m).
     camera_height_m: float = 1.2
@@ -67,6 +78,12 @@ class PerceptionConfig:
     # --- vision_pilot ONNX nets (SP2). All OFF by default; a hardware profile
     # (config/hardware/vision_pilot.yaml) turns them on. ---
     onnx_provider: str = "cpu"           # cpu | cuda | tensorrt (shared EP)
+    # Threads per ONNX op. 0 = leave onnxruntime's own default, which is the
+    # right answer more often than it looks: measured on an 8-core CPU-only
+    # laptop, forcing full graph optimisation with default threading made
+    # AutoSpeed *slower* (113 ms vs 63 ms) through oversubscription. Measure
+    # before setting this.
+    onnx_intra_op_threads: int = 0
     autospeed_enabled: bool = False
     autosteer_enabled: bool = False
     autodrive_enabled: bool = False
@@ -167,6 +184,10 @@ class HMIConfig:
     web_port: int = 8484
     # JPEG quality for the WebSocket video stream (75 ≈ 60 KB/frame at 720p).
     jpeg_quality: int = 75
+    # Width the video is downscaled to before JPEG encoding. The dashboard
+    # displays well under 1280 px anyway, and the resize costs ~1 ms while
+    # cutting roughly half the bytes off the socket. 0 = send at full width.
+    stream_width: int = 960
     window_title: str = "Cruze HUD"
     overlay_alpha: float = 0.7
     show_track_ids: bool = True

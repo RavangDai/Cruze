@@ -35,9 +35,32 @@ logger = logging.getLogger(__name__)
 
 _WEB_DIR = pathlib.Path(__file__).parent / "web"
 
-# Scene JSON cap — full track lists at camera rate would saturate the socket;
-# 10 Hz is smooth for gauges and overlays.
-_SCENE_MAX_HZ = 10.0
+# Scene JSON cap. Perception already paces itself via perception.target_hz, so
+# this is only a ceiling for profiles configured to run faster than the
+# dashboard can usefully draw. Set above target_hz or scenes get dropped and
+# their frames are held in the client for nothing.
+_SCENE_MAX_HZ = 20.0
+
+# Binary frame header, little-endian: uint32 frame_id, uint16 source width,
+# uint16 source height, then JPEG bytes.
+#
+# frame_id lets the client pair a frame with the scene computed from it instead
+# of extrapolating box positions between scenes. The source dimensions make the
+# frame self-describing: overlay coordinates arrive in camera-frame pixels while
+# the JPEG is downscaled to hmi.stream_width, so the client needs both to scale
+# correctly. Sending them beats deriving them from camera config, which is only
+# a request — a capture device may ignore it, and a replayed file always does.
+FRAME_HEADER_BYTES = 8
+
+
+def frame_header(frame_id: int, src_width: int, src_height: int) -> bytes:
+    """Tag a streamed frame with its id and the dimensions its overlay
+    coordinates are expressed in."""
+    return (
+        (frame_id % 2**32).to_bytes(4, "little")
+        + min(src_width, 65535).to_bytes(2, "little")
+        + min(src_height, 65535).to_bytes(2, "little")
+    )
 
 
 class ClientHub:
@@ -184,6 +207,19 @@ class DashboardService:
         queue = self._bus.subscribe(Channel.PERCEPTION_FRAME, maxsize=2)
         loop = asyncio.get_running_loop()
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self._cfg.hmi.jpeg_quality]
+        stream_width = self._cfg.hmi.stream_width
+
+        def encode(image) -> tuple[bool, Any]:
+            if stream_width and image.shape[1] > stream_width:
+                # The stage is never displayed at full camera width, and the
+                # resize costs ~1 ms against roughly half the bytes on the
+                # socket. Overlay coordinates are in frame px, so the client
+                # scales them by the bitmap size it actually receives.
+                height = round(image.shape[0] * stream_width / image.shape[1])
+                image = cv2.resize(image, (stream_width, height),
+                                   interpolation=cv2.INTER_AREA)
+            return cv2.imencode(".jpg", image, encode_params)
+
         while self._running:
             try:
                 frame: Frame = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -191,11 +227,12 @@ class DashboardService:
                 continue
             if self._hub.client_count == 0:
                 continue  # don't burn CPU encoding for nobody
-            ok, buf = await loop.run_in_executor(
-                None, cv2.imencode, ".jpg", frame.image, encode_params
-            )
+            ok, buf = await loop.run_in_executor(None, encode, frame.image)
             if ok:
-                self._hub.broadcast(("bin", buf.tobytes()))
+                header = frame_header(
+                    frame.frame_id, frame.image.shape[1], frame.image.shape[0]
+                )
+                self._hub.broadcast(("bin", header + buf.tobytes()))
 
     async def _pump_scenes(self) -> None:
         queue = self._bus.subscribe(Channel.REASONING_SCENE, maxsize=4)

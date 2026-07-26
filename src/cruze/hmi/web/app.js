@@ -1,51 +1,87 @@
 /* CRUZE dashboard client.
-   One WebSocket: binary messages are JPEG frames, text messages are JSON
-   with a "type" discriminator (scene | event | utterance). */
+
+   One WebSocket. Binary messages are a uint32 little-endian frame_id followed
+   by JPEG bytes; text messages are JSON with a "type" discriminator
+   (scene | event | utterance).
+
+   Frames and overlays are paired by frame_id. The previous client extrapolated
+   each box along its measured pixel velocity because scenes arrived well
+   behind the video; that guessing is what made the overlay wobble. Now a frame
+   is held until the scene computed from it arrives, and the overlay is drawn
+   against the image it actually describes. Video still paints at camera rate —
+   only the overlay waits. */
 
 import { drawOverlay } from "./render.js";
+import { drawBev } from "./bev.js";
 
 const MPH = 2.237;
-const TICKER_MAX = 6;
+const TICKER_MAX = 4;
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 8000;
-// Edge alert bars stay lit this long after their event — roughly a human
-// reaction window, matching the cv2 HUD banner spirit.
+// Edge bars stay lit roughly a human reaction window past their event.
 const ALERT_TTL_MS = 2500;
+// Frames held awaiting their scene. Perception runs at ~15 Hz against a 30 fps
+// camera, so a scene is at most a couple of frames behind; 12 is generous and
+// bounds memory at a dozen bitmaps.
+const FRAME_BUFFER = 12;
+// A stage lamp stays lit this long after its stage last produced output.
+const STAGE_TTL_MS = 1200;
 
 const $ = (id) => document.getElementById(id);
 
 const videoCanvas = $("video");
 const overlayCanvas = $("overlay");
+const bevCanvas = $("bev");
 const videoCtx = videoCanvas.getContext("2d");
 const overlayCtx = overlayCanvas.getContext("2d");
 
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
 const state = {
-  scene: null,
-  lastFrameAt: 0,     // performance.now() of last JPEG
-  frameTimes: [],     // rolling window for FPS
-  connected: false,
+  scene: null,          // newest scene, whatever frame it belongs to
+  frames: new Map(),    // frame_id → ImageBitmap, awaiting a matching scene
+  frameSize: null,      // { w, h } of the streamed bitmap
+  overlayDirty: false,
+  lastFrameAt: 0,
+  frameTimes: [],
+  sceneTimes: [],
   events: [],
-  alerts: { left: 0, right: 0, bottom: 0 },  // edge-bar expiry timestamps
+  alerts: { left: 0, right: 0, bottom: 0 },
+  stages: { capture: 0, pre: 0, nets: 0, fusion: 0, plan: 0 },
 };
 
-/* ---------- video frames ---------- */
+/* ---------- video ---------- */
 
-async function onFrame(buffer) {
-  const blob = new Blob([buffer], { type: "image/jpeg" });
+// uint32 frame_id, uint16 source width, uint16 source height, then JPEG.
+const HEADER_BYTES = 8;
+
+async function onBinary(buffer) {
+  const view = new DataView(buffer);
+  const frameId = view.getUint32(0, true);
+  // Overlay coordinates are in camera-frame pixels; the JPEG is downscaled.
+  // The source size travels with the frame rather than being inferred from
+  // camera config, which a replayed file or a stubborn capture device ignores.
+  const srcW = view.getUint16(4, true);
+  const srcH = view.getUint16(6, true);
+  const blob = new Blob([buffer.slice(HEADER_BYTES)], { type: "image/jpeg" });
   let bitmap;
   try {
     bitmap = await createImageBitmap(blob);
   } catch {
     return; // corrupt frame — skip
   }
-  if (videoCanvas.width !== bitmap.width || videoCanvas.height !== bitmap.height) {
-    // Both canvases share the frame's pixel grid so overlay coords need no
-    // scaling; CSS scales the pair together.
-    videoCanvas.width = overlayCanvas.width = bitmap.width;
-    videoCanvas.height = overlayCanvas.height = bitmap.height;
+
+  sizeCanvases(bitmap.width, bitmap.height, srcW, srcH);
+  videoCtx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+
+  // Hold the bitmap only until its scene shows up. Anything older than the
+  // newest scene can never be matched again, so it is released immediately.
+  state.frames.set(frameId, bitmap);
+  while (state.frames.size > FRAME_BUFFER) {
+    const oldest = state.frames.keys().next().value;
+    state.frames.get(oldest).close();
+    state.frames.delete(oldest);
   }
-  videoCtx.drawImage(bitmap, 0, 0);
-  bitmap.close();
 
   const now = performance.now();
   state.lastFrameAt = now;
@@ -53,90 +89,153 @@ async function onFrame(buffer) {
   while (state.frameTimes.length && now - state.frameTimes[0] > 2000) {
     state.frameTimes.shift();
   }
+  markStage("capture");
   $("nosignal").classList.add("hidden");
 }
 
-/* ---------- scene / instruments ---------- */
+function sizeCanvases(w, h, srcW, srcH) {
+  if (state.frameSize && state.frameSize.w === w && state.frameSize.srcW === srcW) return;
+  // w/h are the streamed bitmap; srcW/srcH are the space overlay coords use.
+  state.frameSize = { w, h, srcW: srcW || w, srcH: srcH || h };
+  videoCanvas.width = w;
+  videoCanvas.height = h;
+  // The overlay is drawn at device resolution rather than the frame's, so text
+  // and hairlines stay crisp on a HiDPI screen instead of being upscaled.
+  overlayCanvas.width = Math.round(w * dpr);
+  overlayCanvas.height = Math.round(h * dpr);
+  overlayCanvas.style.width = "100%";
+  overlayCanvas.style.height = "100%";
+  state.overlayDirty = true;
+}
+
+/* ---------- scene ---------- */
+
+function onScene(scene) {
+  state.scene = scene;
+  state.overlayDirty = true;
+
+  const now = performance.now();
+  state.sceneTimes.push(now);
+  while (state.sceneTimes.length && now - state.sceneTimes[0] > 2000) {
+    state.sceneTimes.shift();
+  }
+
+  // Release every frame older than this scene: none of them can be matched.
+  for (const id of [...state.frames.keys()]) {
+    if (id < scene.frame_id) {
+      state.frames.get(id).close();
+      state.frames.delete(id);
+    }
+  }
+
+  markStage("fusion");
+  if (scene.ego_path || scene.curvature != null || scene.cipo_dist != null) markStage("nets");
+  if (scene.lanes) markStage("pre");
+  if (scene.accel != null) markStage("plan");
+
+  updateInstruments(scene);
+  drawBev(bevCanvas, scene, dpr);
+}
 
 function fmtSpeed(mps) {
   return mps == null ? "--" : String(Math.round(mps * MPH));
 }
 
-function onScene(scene) {
-  state.scene = scene;
-  const s = scene.state || {};
-
-  const ego = $("ego-speed");
-  ego.textContent = fmtSpeed(s.speed_mps);
-  const over = s.speed_mps != null && s.limit_mps != null && s.speed_mps > s.limit_mps;
-  ego.classList.toggle("over-limit", over);
-
-  $("speed-src").textContent = "SRC " + (s.source || "----").toUpperCase().replace("_", "-");
-  $("limit").textContent = fmtSpeed(s.limit_mps);
-  $("limit-sign").classList.toggle("over", over);
-  $("heading").textContent =
-    s.heading_deg == null ? "---°" : Math.round(s.heading_deg) + "°";
-
-  setLamp("ann-gps", s.lat != null && s.lon != null);
-  setLamp("ann-obd", s.source === "obd");
-
-  renderLead(scene);
-  updateNav(s.lat, s.lon, s.heading_deg);
+// Bicycle-model steer angle from path curvature: δ = atan(L·κ). Display-only
+// advisory — a real Planning-stage target tyre angle is not computed yet.
+// WHEELBASE_M is a nominal passenger-car value.
+const WHEELBASE_M = 2.7;
+function steerAngleFromCurvature(kappa) {
+  if (kappa == null) return null;
+  return (Math.atan(WHEELBASE_M * kappa) * 180) / Math.PI;
 }
 
-function renderLead(scene) {
-  const body = $("lead-body");
-  const lead = (scene.tracks || []).find((t) => t.id === scene.lead_id);
-  body.replaceChildren();
-  if (!lead) {
-    const none = document.createElement("span");
-    none.className = "muted";
-    none.textContent = "no lead vehicle";
-    body.appendChild(none);
-    return;
-  }
-  const id = document.createElement("span");
-  id.className = "lead-id";
-  id.textContent = `${lead.cls.toUpperCase()}-${lead.id}`;
-  body.appendChild(id);
+function accelClass(a) {
+  if (a == null || a >= -1) return "value";
+  if (a < -5) return "value emergency";
+  if (a < -3) return "value brake";
+  return "value firm";
+}
 
-  const rows = [];
-  if (lead.distance_m != null) rows.push(`${Math.round(lead.distance_m)} M AHEAD`);
-  if (lead.speed_mps != null) rows.push(`${fmtSpeed(lead.speed_mps)} MPH`);
-  if (lead.closing_mps != null && lead.closing_mps > 0.5) {
-    rows.push(`CLOSING ${lead.closing_mps.toFixed(1)} M/S`);
-  }
-  for (const row of rows) {
-    body.appendChild(document.createElement("br"));
-    body.appendChild(document.createTextNode(row));
-  }
+function updateInstruments(scene) {
+  const s = scene.state || {};
+
+  const speed = $("ego-speed");
+  speed.textContent = fmtSpeed(s.speed_mps);
+  const over = s.speed_mps != null && s.limit_mps != null && s.speed_mps > s.limit_mps;
+  speed.className = over ? "value over" : "value";
+  $("limit").textContent = fmtSpeed(s.limit_mps);
+  $("limit-block").className = over ? "limit over" : "limit";
+
+  $("heading").textContent = s.heading_deg == null ? "---°" : `${Math.round(s.heading_deg)}°`;
+  setLamp("lamp-gps", s.lat != null && s.lon != null);
+  setLamp("lamp-obd", s.source === "obd");
+
+  // Lead: prefer the tracked lead's own range, fall back to AutoDrive's CIPO
+  // distance so the readout still says something when only the net has an
+  // opinion. Both are metres to the same object.
+  const lead = (scene.tracks || []).find((t) => t.id === scene.lead_id);
+  const range = lead && lead.distance_m != null ? lead.distance_m : scene.cipo_dist;
+  $("lead-range").textContent = range == null ? "--" : `${Math.round(range)}`;
+  $("lead-kind").textContent = lead ? lead.cls.replace("_", " ") : "no target";
+  $("lead-closing").textContent =
+    lead && lead.closing_mps != null && lead.closing_mps > 0.5
+      ? `closing ${lead.closing_mps.toFixed(1)} m/s`
+      : "";
+
+  const accel = scene.accel;
+  const accelEl = $("accel");
+  accelEl.textContent = accel == null ? "--" : accel.toFixed(1);
+  accelEl.className = accelClass(accel);
+  // Meter fills with braking demand, saturating at the emergency band.
+  $("accel-meter").style.width =
+    accel == null ? "0%" : `${Math.min(100, Math.max(0, -accel / 6) * 100)}%`;
+
+  const steer = steerAngleFromCurvature(scene.curvature);
+  $("steer").textContent = steer == null ? "--" : steer.toFixed(1);
+  // ±8° covers the full width of the indicator; beyond that it pins.
+  $("wheel-mark").style.transform =
+    steer == null ? "translateX(0)" : `translateX(${Math.max(-26, Math.min(26, steer * 3.2))}px)`;
+
+  $("curve").textContent = scene.curvature == null ? "--" : scene.curvature.toFixed(4);
 }
 
 function setLamp(id, on) {
-  const el = $(id);
-  el.classList.toggle("on", !!on);
-  el.classList.toggle("warn", false);
+  $(id).className = on ? "lamp on" : "lamp";
 }
 
-/* ---------- events / ticker ---------- */
+/* ---------- pipeline spine ---------- */
+
+function markStage(name) {
+  state.stages[name] = performance.now();
+}
+
+function refreshStages() {
+  const now = performance.now();
+  for (const [name, at] of Object.entries(state.stages)) {
+    const el = document.querySelector(`#stages li[data-stage="${name}"]`);
+    if (el) el.classList.toggle("live", at > 0 && now - at < STAGE_TTL_MS);
+  }
+}
+
+/* ---------- events ---------- */
 
 function onEvent(ev) {
   state.events.unshift({ ...ev, at: new Date() });
   state.events.length = Math.min(state.events.length, TICKER_MAX);
   armEdgeAlert(ev);
 
-  const ticker = $("ticker");
-  ticker.replaceChildren(
+  $("ticker").replaceChildren(
     ...state.events.map((e) => {
       const li = document.createElement("li");
-      li.className = `level-${e.level}`;
-      const ts = document.createElement("span");
-      ts.className = "ts";
-      ts.textContent = e.at.toTimeString().slice(0, 8);
-      li.appendChild(ts);
-      const kind = e.kind.replace(/_/g, " ").toUpperCase();
-      const extra = e.context && e.context.ttc_s != null ? ` · TTC ${e.context.ttc_s}S` : "";
-      li.appendChild(document.createTextNode(kind + extra));
+      li.className = e.level;
+      const at = document.createElement("span");
+      at.className = "at";
+      at.textContent = e.at.toTimeString().slice(0, 8);
+      li.append(at, document.createTextNode(
+        e.kind.replace(/_/g, " ") +
+        (e.context && e.context.ttc_s != null ? ` · ttc ${e.context.ttc_s}s` : "")
+      ));
       return li;
     })
   );
@@ -144,11 +243,9 @@ function onEvent(ev) {
 
 function onUtterance(u) {
   const line = $("voice-line");
-  line.textContent = "▸ " + u.text;
-  line.classList.remove("muted");
+  line.textContent = u.text;
+  line.classList.remove("quiet");
 }
-
-/* ---------- edge alert bars ---------- */
 
 function armEdgeAlert(ev) {
   const until = performance.now() + ALERT_TTL_MS;
@@ -167,54 +264,26 @@ function applyEdgeAlerts() {
   $("edge-bottom").classList.toggle("active", state.alerts.bottom > now);
 }
 
-/* ---------- nav panel (Leaflet with numeric fallback) ---------- */
+/* ---------- render loop ---------- */
 
-let map = null;
-let marker = null;
-let trail = null;
-const trailPoints = [];
-
-function navFallback(lat, lon) {
-  $("map").hidden = true;
-  const fb = $("nav-fallback");
-  fb.hidden = false;
-  $("nav-lat").textContent = lat != null ? lat.toFixed(5) : "---.-----";
-  $("nav-lon").textContent = lon != null ? lon.toFixed(5) : "---.-----";
-}
-
-function updateNav(lat, lon, headingDeg) {
-  if (lat == null || lon == null) {
-    if (!map) navFallback(lat, lon);
-    return;
-  }
-  if (window.__leafletJsFailed || window.__leafletCssFailed || typeof L === "undefined") {
-    navFallback(lat, lon);
-    return;
-  }
-  try {
-    if (!map) {
-      map = L.map("map", { zoomControl: false, attributionControl: false }).setView([lat, lon], 15);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
-      const arrow = L.divIcon({ className: "", html: "➤", iconSize: [16, 16] });
-      marker = L.marker([lat, lon], { icon: arrow }).addTo(map);
-      trail = L.polyline([], { color: "#39ff6a", weight: 2, opacity: 0.7 }).addTo(map);
+// Only repaints when a scene has arrived. The previous loop cleared and redrew
+// the whole overlay 60 times a second regardless of whether anything changed.
+function renderLoop() {
+  if (state.overlayDirty && state.scene && state.frameSize) {
+    state.overlayDirty = false;
+    const matching = state.frames.get(state.scene.frame_id);
+    if (matching) {
+      // Repaint the exact frame this scene describes, then the overlay on top.
+      videoCtx.drawImage(matching, 0, 0, state.frameSize.w, state.frameSize.h);
+      matching.close();
+      state.frames.delete(state.scene.frame_id);
     }
-    marker.setLatLng([lat, lon]);
-    if (headingDeg != null && marker.getElement()) {
-      // ➤ points east at 0° rotation; compass 0° is north → offset −90°.
-      marker.getElement().style.transform += ` rotate(${headingDeg - 90}deg)`;
-    }
-    // Breadcrumb decimated to ~1 Hz, capped at 5 min of driving.
-    const nowS = Date.now() / 1000;
-    if (!trailPoints.length || nowS - trailPoints[trailPoints.length - 1].t >= 1) {
-      trailPoints.push({ lat, lon, t: nowS });
-      if (trailPoints.length > 300) trailPoints.shift();
-      trail.setLatLngs(trailPoints.map((p) => [p.lat, p.lon]));
-    }
-    map.panTo([lat, lon], { animate: false });
-  } catch {
-    navFallback(lat, lon);
+    // Camera-frame px → displayed px. The overlay canvas matches the streamed
+    // bitmap, so this is the downscale factor the encoder applied.
+    const scale = (overlayCanvas.width / dpr) / state.frameSize.srcW;
+    drawOverlay(overlayCtx, state.scene, scale, dpr);
   }
+  requestAnimationFrame(renderLoop);
 }
 
 /* ---------- websocket ---------- */
@@ -226,11 +295,8 @@ function connect() {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    state.connected = true;
     reconnectDelay = RECONNECT_MIN_MS;
-    const link = $("ann-link");
-    link.classList.add("on");
-    link.classList.remove("warn");
+    $("lamp-link").className = "lamp on";
   };
 
   ws.onmessage = (ev) => {
@@ -245,15 +311,12 @@ function connect() {
       else if (msg.type === "event") onEvent(msg);
       else if (msg.type === "utterance") onUtterance(msg);
     } else {
-      onFrame(ev.data);
+      onBinary(ev.data);
     }
   };
 
   ws.onclose = () => {
-    state.connected = false;
-    const link = $("ann-link");
-    link.classList.remove("on");
-    link.classList.add("warn");
+    $("lamp-link").className = "lamp warn";
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
   };
@@ -261,30 +324,40 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
-/* ---------- render + housekeeping loops ---------- */
+/* ---------- housekeeping ---------- */
 
-function renderLoop() {
-  drawOverlay(overlayCtx, state.scene);
-  requestAnimationFrame(renderLoop);
+function rate(samples) {
+  const n = samples.length;
+  if (n < 2) return null;
+  const span = samples[n - 1] - samples[0];
+  return span > 0 ? (n - 1) / (span / 1000) : null;
 }
 
 setInterval(() => {
-  // Clock (UTC per the status bar label).
-  $("clock").textContent = new Date().toISOString().slice(11, 19) + " UTC";
+  const fps = rate(state.frameTimes);
+  $("cam-fps").textContent = fps == null ? "--.-" : fps.toFixed(1);
+  const hz = rate(state.sceneTimes);
+  $("scene-hz").textContent = hz == null ? "--.-" : hz.toFixed(1);
 
-  // FPS over the rolling window + frame age. Server timestamps are
-  // time.monotonic — not comparable to the client clock — so "ms since the
-  // frame arrived" is the honest latency readout.
-  const n = state.frameTimes.length;
-  const span = n > 1 ? state.frameTimes[n - 1] - state.frameTimes[0] : 0;
-  $("cam-fps").textContent = span > 0 ? ((n - 1) / (span / 1000)).toFixed(1) : "--.-";
-
+  // Server timestamps come from time.monotonic and are not comparable to the
+  // client clock, so report how long ago the last frame arrived here.
   const age = state.lastFrameAt ? Math.round(performance.now() - state.lastFrameAt) : null;
   $("frame-age").textContent = age == null ? "---" : String(Math.min(age, 9999));
   if (age != null && age > 3000) $("nosignal").classList.remove("hidden");
 
-  applyEdgeAlerts(); // expire stale edge bars
-}, 500);
+  applyEdgeAlerts();
+  refreshStages();
+}, 400);
 
+// Size the plan view to its box once, and again whenever the layout reflows.
+function sizeBev() {
+  const rect = bevCanvas.getBoundingClientRect();
+  bevCanvas.width = Math.round(rect.width * dpr);
+  bevCanvas.height = Math.round(rect.height * dpr);
+  drawBev(bevCanvas, state.scene, dpr);
+}
+window.addEventListener("resize", sizeBev);
+
+sizeBev();
 connect();
 requestAnimationFrame(renderLoop);

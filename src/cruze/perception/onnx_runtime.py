@@ -35,7 +35,8 @@ def select_providers(provider: str, available: list[str]) -> list[str]:
 
 
 class OnnxSession:
-    def __init__(self, model_path: str, provider: str = "cpu") -> None:
+    def __init__(self, model_path: str, provider: str = "cpu",
+                 intra_op_threads: int = 0) -> None:
         try:
             import onnxruntime as ort  # type: ignore
         except ImportError as exc:
@@ -44,11 +45,21 @@ class OnnxSession:
                 "Install with: pip install 'cruze[onnx]'"
             ) from exc
         providers = select_providers(provider, ort.get_available_providers())
-        self._session = ort.InferenceSession(model_path, providers=providers)
+        opts = None
+        if intra_op_threads > 0:
+            # Only override when explicitly configured. onnxruntime's own
+            # default is usually right, and pinning the wrong value costs more
+            # than it saves: on a CPU-only laptop, forcing threads alongside
+            # full graph optimisation measured ~1.8x SLOWER than the default
+            # through oversubscription against the perception executor.
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = intra_op_threads
+        self._session = ort.InferenceSession(model_path, opts, providers=providers)
         self._input_names = [i.name for i in self._session.get_inputs()]
         self._output_names = [o.name for o in self._session.get_outputs()]
-        logger.info("OnnxSession %s providers=%s in=%s out=%s",
-                    model_path, providers, self._input_names, self._output_names)
+        logger.info("OnnxSession %s providers=%s intra_op=%s in=%s out=%s",
+                    model_path, providers, intra_op_threads or "default",
+                    self._input_names, self._output_names)
 
     @property
     def input_names(self) -> list[str]:

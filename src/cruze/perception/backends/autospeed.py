@@ -9,25 +9,29 @@ from cruze.core.types import BBox, Detection, ObjectClass
 from cruze.perception import preprocess
 from cruze.perception.onnx_runtime import OnnxSession
 
-# AutoSpeed class-id → ObjectClass. Taxonomy pinned at implementation from the
-# ONNX metadata (C-4 = num_classes) + the upstream auto_speed repo; unknown ids
-# fall through to UNKNOWN. Placeholder map (vehicle-centric) until confirmed.
+# AutoSpeed class-id → ObjectClass. Confirmed 4-class order (K=4 from the ONNX
+# output [1, 4+K, N]); class 3 (car) dominates a real highway scene, matching the
+# empirical id histogram. Unknown ids fall through to UNKNOWN.
 _AUTOSPEED_CLASSES: dict[int, ObjectClass] = {
-    0: ObjectClass.CAR,
-    1: ObjectClass.CAR,
-    2: ObjectClass.TRUCK,
-    3: ObjectClass.BUS,
+    0: ObjectClass.MOTORCYCLE,
+    1: ObjectClass.TRUCK,
+    2: ObjectClass.BUS,
+    3: ObjectClass.CAR,
 }
 
 
 class AutoSpeedEstimator:
     def __init__(self, model_path: str, provider: str = "cpu",
                  conf_threshold: float = 0.6, iou_threshold: float = 0.45,
-                 class_map: dict[int, ObjectClass] | None = None, session=None) -> None:
+                 class_map: dict[int, ObjectClass] | None = None, session=None,
+                 intra_op_threads: int = 0) -> None:
         self._conf = conf_threshold
         self._iou = iou_threshold
         self._class_map = _AUTOSPEED_CLASSES if class_map is None else class_map
-        self._session = session if session is not None else OnnxSession(model_path, provider)
+        self._session = (
+            session if session is not None
+            else OnnxSession(model_path, provider, intra_op_threads)
+        )
 
     def infer(self, chw: np.ndarray, sx: float, sy: float, crop_top: int) -> tuple[Detection, ...]:
         raw = self._session.run({self._session.input_names[0]: chw})[0]

@@ -71,6 +71,7 @@ class YoloDetector:
         model_path: str = "models/yolov8n-seg.pt",
         confidence_threshold: float = 0.4,
         device: str = "cpu",
+        classes: tuple[ObjectClass, ...] | None = None,
     ) -> None:
         try:
             from ultralytics import YOLO  # type: ignore
@@ -84,9 +85,18 @@ class YoloDetector:
         self._model: Any = YOLO(model_path)
         self._model.to(device)
         self._conf = confidence_threshold
+        # Restricting classes at the ultralytics call filters inside NMS, so
+        # the suppressed classes cost nothing downstream. Used to keep the
+        # demoted context pass off vehicles, which AutoSpeed already owns.
+        self._class_ids: list[int] | None = (
+            None if classes is None
+            else sorted(cid for cid, oc in _COCO_MAP.items() if oc in classes)
+        )
 
     def detect(self, frame: Frame) -> list[Detection]:
-        results = self._model(frame.image, conf=self._conf, verbose=False)
+        results = self._model(
+            frame.image, conf=self._conf, classes=self._class_ids, verbose=False
+        )
         detections: list[Detection] = []
         for r in results:
             if r.boxes is None:

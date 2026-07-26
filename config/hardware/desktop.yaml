@@ -9,10 +9,21 @@ camera:
 
 perception:
   backend: yolo
-  # yolov8n-seg is ~1.5-2x yolov8n on CPU (~90-130 ms at 720p on a laptop);
-  # lanes + light HSV add ~5 ms. The budget is advisory — over-budget frames
-  # log at DEBUG and count in metrics, nothing is dropped.
-  latency_budget_ms: 150.0
+  # Box-only weights: AutoSpeed owns the vehicle classes on every frame, so
+  # this pass only supplies person / traffic light / stop sign and never needs
+  # instance masks. Measured 43 ms vs 60 ms for yolov8n-seg at 720p.
+  model_path: models/yolov8n.pt
+  # AutoSpeed (vision_pilot) is the per-frame vehicle/CIPO source — the AI
+  # network stage of the reference architecture. Needs models/autospeed_fp32.onnx
+  # + onnxruntime; degrades gracefully to a full-rate YOLO pass if either is
+  # missing, so a laptop without the weights still detects cars.
+  autospeed_enabled: true
+  # Hot path measured ~70 ms on a CPU-only laptop (63 ms AutoSpeed + 6 ms
+  # preprocess). The budget is advisory — over-budget frames log at DEBUG and
+  # count in metrics, nothing is dropped.
+  latency_budget_ms: 100.0
+  target_hz: 15.0    # camera still streams 30 fps to the dashboard
+  context_hz: 3.0    # YOLO pass for person / traffic light / stop sign
 
 telemetry:
   simulated: true            # no OBD dongle on a laptop
@@ -28,7 +39,7 @@ voice:
 
 hmi:
   enabled: true
-  backend: opencv          # native OpenCV window on the desktop, not the web dashboard
+  backend: web             # browser dashboard at http://127.0.0.1:8484
 
 logging:
   level: DEBUG

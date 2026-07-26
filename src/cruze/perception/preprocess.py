@@ -43,22 +43,76 @@ def chw_from_rgb01(rgb01: np.ndarray, imagenet: bool) -> np.ndarray:
     return np.ascontiguousarray(np.transpose(arr, (2, 0, 1))[None])
 
 
-def decode_yolo(raw: np.ndarray, conf_thres: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def chw_from_bgr_u8(bgr_u8: np.ndarray, imagenet: bool) -> np.ndarray:
+    """HWC uint8 BGR → contiguous [1,3,H,W] float32 RGB in [0,1].
+
+    Same result as cvtColor + astype(float32)/255 + chw_from_rgb01, but the
+    channel swap happens on the uint8 view (`[..., ::-1]`, free) and the scale
+    is folded into the one float conversion. That drops a full float32 copy of
+    a 1024x512x3 array — ~6 MB of allocation and traffic per net, per frame.
+    """
+    rgb01 = np.multiply(bgr_u8[..., ::-1], np.float32(1.0 / 255.0), dtype=np.float32)
+    return chw_from_rgb01(rgb01, imagenet)
+
+
+def logit(p: float) -> float:
+    """Inverse sigmoid. Saturating thresholds map to ±inf, which compares
+    correctly against finite logits, so no clamping is needed."""
+    if p <= 0.0:
+        return float("-inf")
+    if p >= 1.0:
+        return float("inf")
+    return float(np.log(p / (1.0 - p)))
+
+
+def is_activated(class_block: np.ndarray) -> bool:
+    """True when a [K, N] class block holds probabilities rather than logits.
+
+    Raw logits are unbounded and are strongly negative for the overwhelming
+    majority of anchors, so a block that lies entirely within [0, 1] has
+    already had its sigmoid applied. The exported AutoSpeed graph bakes the
+    activation in; auto_speed.cpp applies it itself on a graph that does not.
+    Applying it twice maps [0, 1] onto [0.5, 0.73], which silently turns a
+    configured 0.6 threshold into an effective 0.405 and reports every score in
+    a narrow band around 0.7.
+    """
+    return bool(class_block.min() >= 0.0 and class_block.max() <= 1.0)
+
+
+def decode_yolo(
+    raw: np.ndarray, conf_thres: float, activated: bool | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """YOLO decode of [1, 4+K, N] → (boxes[M,4] xyxy, scores[M], class_ids[M])
-    in net px. Mirrors auto_speed.cpp post_process (sigmoid + argmax + threshold)."""
+    in net px.
+
+    ``activated`` says whether the class rows are already probabilities;
+    None auto-detects (see is_activated). When they are logits, thresholding
+    happens on the logit — sigmoid is monotonic, so it selects exactly the same
+    anchors, and the exp() then runs over the handful of survivors instead of
+    the whole [K, N] block.
+    """
     data = raw[0]                       # [C, N]
     cx, cy, w, h = data[0], data[1], data[2], data[3]
-    logits = data[4:]                   # [K, N]
-    probs = 1.0 / (1.0 + np.exp(-logits))
-    class_ids = np.argmax(probs, axis=0)
-    scores = probs[class_ids, np.arange(probs.shape[1])]
-    keep = scores >= conf_thres
+    cls_block = data[4:]                # [K, N]
+    if activated is None:
+        activated = is_activated(cls_block)
+
+    # argmax is invariant under sigmoid, so it is the same either way.
+    class_ids = np.argmax(cls_block, axis=0)
+    best = cls_block[class_ids, np.arange(cls_block.shape[1])]
+    if activated:
+        keep = best >= conf_thres
+        scores = best[keep]
+    else:
+        keep = best >= logit(conf_thres)
+        scores = 1.0 / (1.0 + np.exp(-best[keep]))
+
     boxes = np.stack(
         [cx[keep] - w[keep] / 2, cy[keep] - h[keep] / 2,
          cx[keep] + w[keep] / 2, cy[keep] + h[keep] / 2],
         axis=1,
     ).astype(np.float32)
-    return boxes, scores[keep].astype(np.float32), class_ids[keep].astype(np.int64)
+    return boxes, scores.astype(np.float32), class_ids[keep].astype(np.int64)
 
 
 def nms(boxes: np.ndarray, scores: np.ndarray, iou_thres: float) -> list[int]:
@@ -101,8 +155,7 @@ def preprocess_crop2_1(image_bgr: np.ndarray) -> tuple[np.ndarray, float, float,
     crop_top, sx, sy = crop_resize_params(h, w)
     cropped = image_bgr[crop_top:h, 0:w]
     resized = cv2.resize(cropped, (NET_W, NET_H), interpolation=cv2.INTER_LINEAR)
-    rgb01 = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # uint8 → [0,1]
-    return chw_from_rgb01(rgb01, imagenet=False), sx, sy, crop_top
+    return chw_from_bgr_u8(resized, imagenet=False), sx, sy, crop_top
 
 
 def preprocess_bev(image_bgr: np.ndarray, homography: np.ndarray) -> np.ndarray:
@@ -112,5 +165,4 @@ def preprocess_bev(image_bgr: np.ndarray, homography: np.ndarray) -> np.ndarray:
         image_bgr, homography, (NET_W, NET_H),
         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101,
     )
-    rgb01 = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # uint8 → [0,1]
-    return chw_from_rgb01(rgb01, imagenet=True)
+    return chw_from_bgr_u8(warped, imagenet=True)

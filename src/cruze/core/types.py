@@ -121,6 +121,14 @@ class Track:
     mask_xy: tuple[tuple[float, float], ...] | None = None
     # Debounced lamp state; set only for TRAFFIC_LIGHT tracks.
     light_state: TrafficLightState | None = None
+    # Frame this track was last updated from. Carried end-to-end so the
+    # dashboard can pin an overlay to the exact JPEG it belongs to instead of
+    # extrapolating between scenes.
+    frame_id: int = 0
+    # Ground-plane position in metres relative to the camera: lateral offset
+    # (positive = right of centre) and forward range. None when the geometry
+    # is unavailable. Feeds the dashboard's bird's-eye plan.
+    ground_xz_m: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +214,9 @@ class Scene:
     """Aggregated snapshot handed to the reasoning layer each cycle."""
 
     timestamp: float = field(default_factory=time.monotonic)
+    # Camera frame these tracks came from; 0 when unknown. The dashboard
+    # matches this against the frame_id tagged onto each streamed JPEG.
+    frame_id: int = 0
     tracks: tuple[Track, ...] = ()
     vehicle_state: VehicleState = field(default_factory=VehicleState)
     # Nearest lead vehicle (same lane, ahead) if any.

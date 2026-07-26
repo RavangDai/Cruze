@@ -52,6 +52,45 @@ class CameraService:
         self._focal_length_px = focal_length_px
         self._frame_id: int = 0
         self._running = False
+        # Width the configured focal length was derived from. A capture device
+        # may ignore a resolution request and a replayed file always does, so
+        # the intrinsic is re-derived once the true frame size is known —
+        # otherwise every distance downstream is scaled by the size mismatch.
+        self._focal_basis_width = cfg.width
+
+    def _focal_for(self, frame_width: int) -> float | None:
+        """Focal length in px for the frame actually being captured."""
+        if frame_width == self._focal_basis_width:
+            return self._focal_length_px
+        corrected = (
+            None if self._focal_length_px is None
+            else self._focal_length_px * frame_width / self._focal_basis_width
+        )
+        logger.warning(
+            "Camera: frames are %d px wide but config says %d — focal length "
+            "corrected %s -> %s px so distances stay calibrated",
+            frame_width, self._focal_basis_width,
+            f"{self._focal_length_px:.1f}" if self._focal_length_px else "none",
+            f"{corrected:.1f}" if corrected else "none",
+        )
+        self._focal_length_px = corrected
+        self._focal_basis_width = frame_width
+        return corrected
+
+    def _adopt_frame_size(self, image) -> None:
+        """Make the shared camera config describe the frames actually arriving.
+
+        Config resolution is a request: a capture device may ignore it and a
+        replayed file always does. Consumers that reason in image coordinates
+        (lead-lane geometry, edge-truncation tests) read it, so leaving it
+        stale silently skews them.
+        """
+        height, width = image.shape[0], image.shape[1]
+        if (width, height) != (self._cfg.width, self._cfg.height):
+            logger.info("Camera: frame size %dx%d (config said %dx%d) — config updated",
+                        width, height, self._cfg.width, self._cfg.height)
+            self._cfg.width = width
+            self._cfg.height = height
 
     async def run(self) -> None:
         self._running = True
@@ -142,11 +181,13 @@ class CameraService:
                     logger.warning("Camera: frame grab failed — skipping")
                     await asyncio.sleep(0.01)
                     continue
+                focal = self._focal_for(image.shape[1])
+                self._adopt_frame_size(image)
                 frame = Frame(
                     image=image,
                     timestamp=time.monotonic(),
                     frame_id=self._frame_id,
-                    focal_length_px=self._focal_length_px,
+                    focal_length_px=focal,
                 )
                 await self._bus.publish(Channel.PERCEPTION_FRAME, frame)
                 self._frame_id += 1

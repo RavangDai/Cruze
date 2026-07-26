@@ -138,3 +138,30 @@ def estimate_distance_fused(
         if gp is not None:
             return gp
     return estimate_distance(bbox, cls, focal_length)
+
+
+def ground_position_xz(
+    bbox: BBox,
+    distance_m: float | None,
+    focal_length: float,
+    image_width: int,
+) -> tuple[float, float] | None:
+    """
+    Object position on the ground plane in metres: (lateral X, forward Z),
+    X positive to the right of the camera axis.
+
+    This is the (u,v) → (X,Y) step the VisionPilot pipeline applies to a CIPO
+    box's bottom centre, expressed with the intrinsics we already have rather
+    than a full homography: at range Z one pixel of horizontal offset from the
+    principal point spans Z/f metres, so
+
+        X = (u_centre − image_width/2) · Z / f
+
+    Z comes from the caller's existing depth estimate, so this adds no new
+    error model — it only resolves the bearing the distance estimate lacks.
+    Returns None when distance is unknown or the focal length is degenerate.
+    """
+    if distance_m is None or focal_length <= 0.0:
+        return None
+    lateral_m = (bbox.cx - image_width / 2.0) * distance_m / focal_length
+    return (lateral_m, distance_m)

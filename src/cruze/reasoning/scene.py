@@ -45,6 +45,17 @@ _VEHICLE_CLASSES = {
 # considered to be in the ego lane.
 _LANE_CENTRE_FRACTION = 0.35
 
+# Half-width of the ego lane in metres, used when a track has a ground-plane
+# position. A US lane is ~3.7 m; the extra margin past 1.85 m accepts a vehicle
+# straddling the line or sitting slightly off-centre, which is exactly the
+# case a following-distance warning needs to catch.
+_EGO_LANE_HALF_WIDTH_M = 2.4
+
+# A box within this many pixels of the left or right frame edge is treated as
+# running off it. A couple of pixels of slack absorbs detector jitter on a box
+# that genuinely ends at the boundary.
+_EDGE_MARGIN_PX = 3.0
+
 # Lanes unreceived for longer than this are dropped from the Scene: the lane
 # detector stopped or is disabled, and stale geometry would mislead. Measured
 # from MESSAGE ARRIVAL, not the frame capture timestamp — on a loaded CPU the
@@ -91,26 +102,41 @@ class SceneAssembler:
         logger.info("SceneAssembler started")
 
         async def drain_aux() -> None:
-            """Keep vehicle state and lanes up to date in the background."""
-            while self._running:
-                drained = False
-                if not state_q.empty():
-                    self._latest_vehicle_state = state_q.get_nowait()
-                    drained = True
-                if not lanes_q.empty():
-                    self._latest_lanes = lanes_q.get_nowait()
-                    self._lanes_seen_at = time.monotonic()
-                    drained = True
-                if not ego_q.empty():
-                    self._latest_ego = ego_q.get_nowait()
-                    self._ego_seen_at = time.monotonic()
-                    drained = True
-                if not drained:
-                    await asyncio.sleep(0.01)
-                else:
-                    await asyncio.sleep(0)
+            """Keep vehicle state, lanes and the ego estimate up to date.
 
-        asyncio.ensure_future(drain_aux())
+            Waits on the three queues rather than polling them: the previous
+            10 ms poll loop woke 100 times a second to find nothing, on the
+            same event loop the perception publishes run on.
+            """
+            pending = {
+                asyncio.ensure_future(q.get()): q
+                for q in (state_q, lanes_q, ego_q)
+            }
+            try:
+                while self._running:
+                    done, _ = await asyncio.wait(
+                        pending.keys(),
+                        timeout=1.0,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in done:
+                        queue = pending.pop(task)
+                        message = task.result()
+                        if queue is state_q:
+                            self._latest_vehicle_state = message
+                        elif queue is lanes_q:
+                            self._latest_lanes = message
+                            self._lanes_seen_at = time.monotonic()
+                        else:
+                            self._latest_ego = message
+                            self._ego_seen_at = time.monotonic()
+                        pending[asyncio.ensure_future(queue.get())] = queue
+            finally:
+                for task in pending:
+                    task.cancel()
+
+        aux_task = asyncio.ensure_future(drain_aux())
+        self._aux_task = aux_task
 
         while self._running:
             try:
@@ -123,6 +149,9 @@ class SceneAssembler:
 
     async def stop(self) -> None:
         self._running = False
+        aux_task = getattr(self, "_aux_task", None)
+        if aux_task is not None:
+            aux_task.cancel()
 
     def _build_scene(self, tracks: list[Track]) -> Scene:
         tracks = self._with_absolute_speed(tracks)
@@ -136,6 +165,10 @@ class SceneAssembler:
             ego = None
         scene = Scene(
             timestamp=now,
+            # Every track in a batch carries the frame it was produced from;
+            # with none, fall back to whichever net output is still fresh so
+            # the dashboard can still pair an empty scene with its frame.
+            frame_id=self._batch_frame_id(tracks, lanes, ego),
             tracks=tuple(tracks),
             vehicle_state=self._latest_vehicle_state,
             lead_track=lead,
@@ -151,6 +184,21 @@ class SceneAssembler:
             scene,
             required_accel_mps2=threat.idm_required_accel(scene, self._cfg.reasoning),
         )
+
+    @staticmethod
+    def _batch_frame_id(
+        tracks: list[Track], lanes: Lanes | None, ego: EgoEstimate | None
+    ) -> int:
+        """Frame this scene describes. The tracker stamps one frame_id across a
+        whole batch, so any track answers; lanes and the ego estimate ship with
+        the same frame and cover the empty-batch case."""
+        for track in tracks:
+            return track.frame_id
+        if ego is not None:
+            return ego.frame_id
+        if lanes is not None:
+            return lanes.frame_id
+        return 0
 
     def _with_absolute_speed(self, tracks: list[Track]) -> list[Track]:
         """
@@ -174,19 +222,53 @@ class SceneAssembler:
                 out.append(t)
         return out
 
+    @property
+    def _frame_width(self) -> int:
+        """Width of the frames actually arriving. CameraService corrects the
+        shared config once it sees a real frame, so read it rather than the
+        value captured at construction."""
+        return self._cfg.camera.width or self._image_width
+
+    def _is_edge_truncated(self, t: Track) -> bool:
+        """True when the box runs off the left or right of the frame.
+
+        Such a box has no meaningful centre — the object continues past the
+        edge — so both its lateral position and its ground-plane range are
+        measured against the frame boundary rather than the object. A vehicle
+        cut off at the side is beside us, not ahead, and treating it as the
+        lead produces a stream of phantom collision warnings.
+
+        Only the sides are tested. A genuine lead in close traffic legitimately
+        touches the bottom edge, and excluding those would drop the real target
+        exactly when a forward-collision warning matters most.
+        """
+        return t.bbox.x1 <= _EDGE_MARGIN_PX or t.bbox.x2 >= self._frame_width - _EDGE_MARGIN_PX
+
+    def _in_ego_lane(self, t: Track) -> bool:
+        """Same-lane test, in metres where the geometry allows it.
+
+        A track's ground position gives its lateral offset directly, so the
+        test is the physical one: is it inside the ego lane. The pixel-fraction
+        proxy below is the fallback, and it is only as good as the configured
+        image width — which is a request, not a fact, for a capture device and
+        simply wrong for a replayed file of another resolution.
+        """
+        if t.ground_xz_m is not None:
+            return abs(t.ground_xz_m[0]) < _EGO_LANE_HALF_WIDTH_M
+        cx_image = self._frame_width / 2
+        return abs(t.bbox.cx - cx_image) < self._frame_width * _LANE_CENTRE_FRACTION
+
     def _find_lead(self, tracks: list[Track]) -> Track | None:
         """
-        Identify the lead vehicle: closest vehicle-class track that appears
-        roughly centred in the frame (same-lane proxy).
+        Identify the lead vehicle: the closest vehicle-class track in the ego
+        lane.
         """
-        cx_image = self._image_width / 2
-        margin = self._image_width * _LANE_CENTRE_FRACTION
-
         candidates = [
             t for t in tracks
             if t.cls in _VEHICLE_CLASSES
             and t.distance_m is not None
-            and abs(t.bbox.cx - cx_image) < margin
+            and not self._is_edge_truncated(t)
+            and self._in_ego_lane(t)
         ]
         if not candidates:
             return None

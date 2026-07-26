@@ -25,6 +25,13 @@ class VisionNets:
     def any_enabled(self) -> bool:
         return any((self._autospeed, self._autosteer, self._autodrive))
 
+    @property
+    def has_vehicle_source(self) -> bool:
+        """True when a net supplies vehicle boxes on every frame. When False the
+        pipeline must keep the general detector on the hot path, since nothing
+        else would see a car."""
+        return self._autospeed is not None
+
     def _log_failure_once(self, key: str, msg: str) -> None:
         if key not in self._logged_failures:
             self._logged_failures.add(key)
@@ -94,19 +101,23 @@ def build_vision_nets(cfg) -> VisionNets:
     pc = cfg.perception
     autospeed = autosteer = autodrive = None
 
+    threads = getattr(pc, "onnx_intra_op_threads", 0)
+
     if pc.autospeed_enabled:
         try:
             from cruze.perception.backends.autospeed import AutoSpeedEstimator
             autospeed = AutoSpeedEstimator(
                 pc.autospeed_model_path, pc.onnx_provider,
-                pc.autospeed_conf_threshold, pc.autospeed_iou_threshold)
+                pc.autospeed_conf_threshold, pc.autospeed_iou_threshold,
+                intra_op_threads=threads)
         except Exception:
             logger.exception("AutoSpeed disabled — failed to load")
 
     if pc.autosteer_enabled:
         try:
             from cruze.perception.autosteer import AutoSteerEstimator
-            autosteer = AutoSteerEstimator(pc.autosteer_model_path, pc.onnx_provider)
+            autosteer = AutoSteerEstimator(pc.autosteer_model_path, pc.onnx_provider,
+                                           intra_op_threads=threads)
         except Exception:
             logger.exception("AutoSteer disabled — failed to load")
 
@@ -116,7 +127,8 @@ def build_vision_nets(cfg) -> VisionNets:
             homography = load_homography(pc.autodrive_homography_path)
             autodrive = AutoDriveEstimator(
                 pc.autodrive_model_path, homography, pc.onnx_provider,
-                pc.autodrive_curv_scale, pc.autodrive_flag_threshold)
+                pc.autodrive_curv_scale, pc.autodrive_flag_threshold,
+                intra_op_threads=threads)
         except Exception:
             logger.exception("AutoDrive disabled — failed to load")
 

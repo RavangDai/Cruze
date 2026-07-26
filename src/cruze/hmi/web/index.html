@@ -5,90 +5,102 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CRUZE</title>
   <link rel="stylesheet" href="/static/style.css">
-  <!-- Leaflet from CDN; onerror flips the NAV panel to the numeric fallback
-       so the dashboard works fully offline (a car has no network guarantee). -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-        crossorigin="anonymous"
-        onerror="window.__leafletCssFailed = true">
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-          crossorigin="anonymous"
-          onerror="window.__leafletJsFailed = true"></script>
+  <!-- No external assets. A car has no network guarantee, and the plan view
+       replaced the tile map that used to need one. -->
 </head>
 <body>
 
-<header id="statusbar">
+<header id="spine">
   <span class="wordmark">CRUZE</span>
-  <span class="annunciators">
-    <span class="ann" id="ann-cam">CAM <b id="cam-fps">--.-</b> FPS</span>
-    <span class="ann" id="ann-age">LAT <b id="frame-age">---</b> MS</span>
-    <span class="ann lamp" id="ann-gps">GPS</span>
-    <span class="ann lamp" id="ann-obd">OBD</span>
-    <span class="ann lamp warn" id="ann-link">LINK</span>
+
+  <!-- The pipeline is a real ordered sequence — data flows through these five
+       stages in this order — so the order carries information. Each stage lights
+       when it has produced something this second. -->
+  <ol id="stages" aria-label="Pipeline stages">
+    <li data-stage="capture">Capture</li>
+    <li data-stage="pre">Pre</li>
+    <li data-stage="nets">Nets</li>
+    <li data-stage="fusion">Fusion</li>
+    <li data-stage="plan">Plan</li>
+  </ol>
+
+  <span class="telemetry">
+    <span><b id="cam-fps">--.-</b> fps</span>
+    <span><b id="scene-hz">--.-</b> Hz</span>
+    <span><b id="frame-age">---</b> ms</span>
+    <span class="lamp" id="lamp-gps">GPS</span>
+    <span class="lamp" id="lamp-obd">OBD</span>
+    <span class="lamp" id="lamp-link">Link</span>
   </span>
-  <span class="clock" id="clock">--:--:--&nbsp;UTC</span>
 </header>
 
-<main id="layout">
-
-  <section id="camera-col">
-    <div id="stage" aria-label="Live camera with detection overlay">
-      <canvas id="video"></canvas>
-      <canvas id="overlay"></canvas>
-      <div id="nosignal">NO SIGNAL — waiting for camera</div>
-      <div id="edge-left" class="edge-bar side left" aria-hidden="true"></div>
-      <div id="edge-right" class="edge-bar side right" aria-hidden="true"></div>
-      <div id="edge-bottom" class="edge-bar bottom" aria-hidden="true"></div>
-    </div>
-    <ul id="ticker" aria-live="polite">
-      <li class="allclear">ALL CLEAR</li>
-    </ul>
-  </section>
-
-  <aside id="rail">
-    <div class="panel" id="speed-panel">
-      <div class="readout-huge" id="ego-speed">--</div>
-      <div class="readout-sub">
-        <span>MPH</span>
-        <span class="tag" id="speed-src">SRC ----</span>
-      </div>
-    </div>
-
-    <div class="panel split">
-      <div class="speed-sign" id="limit-sign">
-        <span class="sign-word">MAX</span>
-        <div class="readout-mid" id="limit">--</div>
-      </div>
-      <div>
-        <div class="panel-label">HDG</div>
-        <div class="readout-mid" id="heading">---&deg;</div>
-      </div>
-    </div>
-
-    <div class="panel" id="lead-panel">
-      <div class="panel-label">LEAD</div>
-      <div id="lead-body">
-        <span class="muted">no lead vehicle</span>
-      </div>
-    </div>
-
-    <div class="panel" id="nav-panel">
-      <div class="panel-label">NAV</div>
-      <div id="map"></div>
-      <div id="nav-fallback" hidden>
-        <div>LAT <b id="nav-lat">---.-----</b></div>
-        <div>LON <b id="nav-lon">---.-----</b></div>
-      </div>
-    </div>
-
-    <div class="panel" id="voice-panel">
-      <div class="panel-label">CRUZE SAYS</div>
-      <div id="voice-line" class="muted">&hellip;</div>
-    </div>
-  </aside>
-
+<main id="stage" aria-label="Live camera with detection overlay">
+  <canvas id="video"></canvas>
+  <canvas id="overlay"></canvas>
+  <p id="nosignal">Waiting for camera</p>
+  <div id="edge-left" class="edge side" aria-hidden="true"></div>
+  <div id="edge-right" class="edge side" aria-hidden="true"></div>
+  <div id="edge-bottom" class="edge bottom" aria-hidden="true"></div>
 </main>
+
+<section id="cluster" aria-label="Instruments">
+
+  <article class="cell plan-cell">
+    <h2>Plan view</h2>
+    <canvas id="bev" aria-label="Tracked objects from above"></canvas>
+  </article>
+
+  <article class="cell speed-cell">
+    <h2>Speed</h2>
+    <div class="value" id="ego-speed">--</div>
+    <div class="foot">
+      <span>mph</span>
+      <span id="limit-block" class="limit">Max <b id="limit">--</b></span>
+    </div>
+  </article>
+
+  <article class="cell">
+    <h2>Lead</h2>
+    <div class="value" id="lead-range">--</div>
+    <div class="foot">
+      <span id="lead-kind">no target</span>
+      <span id="lead-closing"></span>
+    </div>
+  </article>
+
+  <article class="cell">
+    <h2>Target accel</h2>
+    <div class="value" id="accel">--</div>
+    <div class="foot">
+      <span>m/s&sup2;</span>
+      <span class="meter" aria-hidden="true"><i id="accel-meter"></i></span>
+    </div>
+  </article>
+
+  <article class="cell">
+    <h2>Target tyre angle</h2>
+    <div class="value" id="steer">--</div>
+    <div class="foot">
+      <span>degrees</span>
+      <span class="wheel" aria-hidden="true"><i id="wheel-mark"></i></span>
+    </div>
+  </article>
+
+  <article class="cell">
+    <h2>Road curvature</h2>
+    <div class="value" id="curve">--</div>
+    <div class="foot">
+      <span>1/m</span>
+      <span id="heading">---&deg;</span>
+    </div>
+  </article>
+
+</section>
+
+<footer id="log" aria-live="polite">
+  <p class="quiet" id="voice-line">Cruze is watching the road.</p>
+  <ul id="ticker"></ul>
+</footer>
 
 <script type="module" src="/static/app.js"></script>
 </body>

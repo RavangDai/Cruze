@@ -150,3 +150,82 @@ def test_scene_drops_stale_ego():
     scene = asm._build_scene([])
     assert scene.cipo_distance_m is None
     assert scene.cipo_flag is None
+
+
+# --- lead selection by ground position -------------------------------------
+
+def _vehicle(tid, bbox, distance_m, ground_xz_m=None):
+    return Track(track_id=tid, bbox=bbox, cls=ObjectClass.CAR,
+                 distance_m=distance_m, ground_xz_m=ground_xz_m)
+
+
+def test_lead_uses_metres_when_ground_position_known():
+    # The pixel proxy depends on a configured image width that a replayed file
+    # ignores. With a ground position the test becomes the physical one.
+    cfg = Config()
+    cfg.camera.width = 1920
+    asm = SceneAssembler(cfg, EventBus(), image_width=1920)
+
+    # Far right of a 1920-wide frame — the pixel proxy would reject it — but
+    # only 0.5 m laterally, so it is genuinely in the ego lane.
+    in_lane = _vehicle(1, BBox(1500, 600, 1700, 780), 30.0, ground_xz_m=(0.5, 30.0))
+    # Near frame centre but 5 m across: an adjacent lane, and nearer, so it
+    # would win on distance alone.
+    beside = _vehicle(2, BBox(900, 600, 1000, 700), 12.0, ground_xz_m=(5.0, 12.0))
+
+    lead = asm._find_lead([in_lane, beside])
+    assert lead is not None and lead.track_id == 1
+
+
+def test_lead_falls_back_to_pixel_proxy_without_ground_position():
+    asm = SceneAssembler(Config(), EventBus(), image_width=1280)
+    centred = _vehicle(1, BBox(600, 400, 700, 500), 25.0)
+    edge = _vehicle(2, BBox(20, 400, 90, 500), 10.0)
+
+    lead = asm._find_lead([centred, edge])
+    assert lead is not None and lead.track_id == 1
+
+
+def test_no_lead_when_every_vehicle_is_out_of_lane():
+    asm = SceneAssembler(Config(), EventBus(), image_width=1280)
+    left = _vehicle(1, BBox(0, 400, 60, 500), 20.0, ground_xz_m=(-6.0, 20.0))
+    right = _vehicle(2, BBox(1800, 400, 1900, 500), 18.0, ground_xz_m=(6.0, 18.0))
+
+    assert asm._find_lead([left, right]) is None
+
+
+def test_edge_truncated_vehicle_is_not_the_lead():
+    # A box running off the side of the frame has no meaningful centre and its
+    # ground-plane range is measured against the boundary, not the object.
+    # Treating one as the lead produces a stream of phantom collision warnings.
+    cfg = Config()
+    cfg.camera.width = 1920
+    asm = SceneAssembler(cfg, EventBus(), image_width=1920)
+
+    clipped = _vehicle(1, BBox(1500, 700, 1920, 1280), 2.5, ground_xz_m=(1.3, 2.5))
+    ahead = _vehicle(2, BBox(900, 600, 1050, 720), 40.0, ground_xz_m=(0.2, 40.0))
+
+    lead = asm._find_lead([clipped, ahead])
+    assert lead is not None and lead.track_id == 2
+
+
+def test_bottom_truncated_lead_is_kept():
+    # Close following legitimately clips the bottom edge; dropping those would
+    # lose the real target exactly when a warning matters most.
+    cfg = Config()
+    cfg.camera.width = 1920
+    asm = SceneAssembler(cfg, EventBus(), image_width=1920)
+
+    close = _vehicle(1, BBox(700, 500, 1200, 1280), 6.0, ground_xz_m=(0.1, 6.0))
+    assert asm._find_lead([close]) is not None
+
+
+def test_frame_width_follows_corrected_camera_config():
+    # CameraService rewrites camera config once it sees a real frame; the
+    # lane geometry must pick that up rather than the construction-time value.
+    cfg = Config()
+    cfg.camera.width = 1280
+    asm = SceneAssembler(cfg, EventBus(), image_width=1280)
+    assert asm._frame_width == 1280
+    cfg.camera.width = 1920
+    assert asm._frame_width == 1920

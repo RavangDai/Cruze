@@ -17,9 +17,9 @@ class _FakeSession:
 
 
 def test_autospeed_decodes_and_unmaps():
-    raw = np.zeros((1, 5, 1), dtype=np.float32)     # 4 box + 1 class
+    raw = np.zeros((1, 8, 1), dtype=np.float32)     # 4 box + 4 class (K=4)
     raw[0, :4, 0] = [512, 256, 100, 80]             # cx,cy,w,h in net px
-    raw[0, 4, 0] = 10.0                             # logit → keep
+    raw[0, 7, 0] = 10.0                            # class id 3 → car (argmax)
     est = AutoSpeedEstimator(model_path="", conf_threshold=0.5, session=_FakeSession(raw))
     dets = est.infer(np.zeros((1, 3, 512, 1024), np.float32), sx=1.25, sy=1.25, crop_top=80)
     assert len(dets) == 1

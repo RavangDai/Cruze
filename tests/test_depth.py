@@ -3,6 +3,7 @@
 import pytest
 
 from cruze.core.types import BBox, ObjectClass
+from cruze.perception import depth
 from cruze.perception.depth import (
     estimate_distance,
     estimate_distance_fused,
@@ -57,3 +58,38 @@ def test_fused_uses_bbox_height_for_traffic_lights():
     bbox = BBox(100, 380, 200, 460)
     z = estimate_distance_fused(bbox, ObjectClass.TRAFFIC_LIGHT, 1000.0, 1.5, 360.0)
     assert z == pytest.approx(estimate_distance(bbox, ObjectClass.TRAFFIC_LIGHT, 1000.0))
+
+
+# --- ground-plane (X, Z) projection ---------------------------------------
+
+def test_ground_position_centred_object_has_no_lateral_offset():
+    # A box centred on the principal point is straight ahead by construction.
+    bbox = BBox(x1=620.0, y1=300.0, x2=660.0, y2=400.0)
+    x, z = depth.ground_position_xz(bbox, 30.0, focal_length=800.0, image_width=1280)
+    assert x == pytest.approx(0.0)
+    assert z == pytest.approx(30.0)
+
+
+def test_ground_position_sign_follows_image_side():
+    # Right of centre must read positive, left negative — the plan view mirrors
+    # the camera view, so a sign flip here puts traffic on the wrong side.
+    right = BBox(x1=900.0, y1=300.0, x2=1000.0, y2=400.0)
+    left = BBox(x1=280.0, y1=300.0, x2=380.0, y2=400.0)
+    x_right, _ = depth.ground_position_xz(right, 40.0, 800.0, 1280)
+    x_left, _ = depth.ground_position_xz(left, 40.0, 800.0, 1280)
+    assert x_right > 0 and x_left < 0
+    assert x_right == pytest.approx(-x_left)
+
+
+def test_ground_position_scales_with_range():
+    # X = (u - cx) * Z / f — the same bearing spans more metres further out.
+    bbox = BBox(x1=900.0, y1=300.0, x2=1000.0, y2=400.0)
+    near, _ = depth.ground_position_xz(bbox, 10.0, 800.0, 1280)
+    far, _ = depth.ground_position_xz(bbox, 20.0, 800.0, 1280)
+    assert far == pytest.approx(2.0 * near)
+
+
+def test_ground_position_none_without_distance_or_focal():
+    bbox = BBox(x1=900.0, y1=300.0, x2=1000.0, y2=400.0)
+    assert depth.ground_position_xz(bbox, None, 800.0, 1280) is None
+    assert depth.ground_position_xz(bbox, 30.0, 0.0, 1280) is None

@@ -14,8 +14,12 @@ _MASK_THRESHOLD = 0.5
 
 
 class AutoSteerEstimator:
-    def __init__(self, model_path: str, provider: str = "cpu", session=None) -> None:
-        self._session = session if session is not None else OnnxSession(model_path, provider)
+    def __init__(self, model_path: str, provider: str = "cpu", session=None,
+                 intra_op_threads: int = 0) -> None:
+        self._session = (
+            session if session is not None
+            else OnnxSession(model_path, provider, intra_op_threads)
+        )
         # Fixed sample rows in net px: np.linspace(0, 511, 64).
         self._rows = np.linspace(0, preprocess.NET_H - 1, _N_PTS)
 

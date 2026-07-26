@@ -31,7 +31,7 @@ from cruze.core.types import Frame
 from cruze.perception.camera import CameraService
 from cruze.perception import depth as depth_mod
 from cruze.perception.detector import load as load_detector
-from cruze.perception.pipeline import PerceptionService
+from cruze.perception.pipeline import CONTEXT_CLASSES, PerceptionService
 from cruze.perception.vision_nets import build_vision_nets
 from cruze.telemetry.vehicle_state import VehicleStateService
 from cruze.reasoning.scene import SceneAssembler
@@ -76,12 +76,23 @@ class Orchestrator:
         # --- Instantiate services ---
         camera_svc = CameraService(cfg.camera, bus, focal_length_px=focal_px)
 
-        detector = load_detector(
-            cfg.perception.backend,
-            model_path=cfg.perception.model_path,
-            confidence_threshold=cfg.perception.confidence_threshold,
-        )
-        perception_svc = PerceptionService(cfg, bus, detector, vision_nets=build_vision_nets(cfg))
+        vision_nets = build_vision_nets(cfg)
+
+        detector_kwargs = {
+            "model_path": cfg.perception.model_path,
+            "confidence_threshold": cfg.perception.confidence_threshold,
+        }
+        # With AutoSpeed owning the vehicle classes on every frame, restrict the
+        # general detector to what AutoSpeed cannot see. Filtering inside its
+        # NMS is free, and it keeps the two sources from producing duplicate
+        # boxes for fusion to throw away. Only the yolo backend takes `classes`.
+        if vision_nets.has_vehicle_source and cfg.perception.backend == "yolo":
+            detector_kwargs["classes"] = CONTEXT_CLASSES
+            logger.info("Context detector restricted to %s",
+                        ", ".join(c.value for c in CONTEXT_CLASSES))
+
+        detector = load_detector(cfg.perception.backend, **detector_kwargs)
+        perception_svc = PerceptionService(cfg, bus, detector, vision_nets=vision_nets)
 
         telemetry_svc = VehicleStateService(cfg, bus)
         scene_svc = SceneAssembler(cfg, bus, image_width=cfg.camera.width)

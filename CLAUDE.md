@@ -124,6 +124,33 @@ No other files need to change.
 
 ---
 
+## Dashboard protocol: `src/cruze/hmi/`
+
+`webapp.py` fans out over one WebSocket. Text frames are JSON with a `type`
+discriminator (`scene` | `event` | `utterance`). Binary frames are a header
+followed by JPEG bytes:
+
+```
+uint32 frame_id | uint16 source width | uint16 source height | JPEG…
+```
+
+**Overlays are paired to frames by `frame_id`, never extrapolated.** The client
+holds each frame until the scene computed from it arrives, then draws both
+together. An earlier version predicted box positions forward along their pixel
+velocity to cover the gap; that guessing is what made the overlay wobble. If an
+overlay looks like it lags or leads the video, the pairing is broken — do not
+reintroduce smoothing to hide it.
+
+The source dimensions ride in the header because overlay coordinates are in
+camera-frame pixels while the JPEG is downscaled to `hmi.stream_width`.
+
+The page is fully self-contained — no CDN, no webfonts, no tile server. A car
+has no network guarantee, so keep it that way. Cost lives in the compositor:
+avoid `backdrop-filter`, stacked `box-shadow`, CSS `filter` chains on live
+content, and canvas `shadowBlur` (`render.js` uses a two-pass stroke instead).
+
+---
+
 ## Config system: `src/cruze/core/config.py`
 
 Load order (later wins):
@@ -169,11 +196,49 @@ Run: `python -m pytest tests/`
 
 | Module | Budget | Notes |
 |---|---|---|
-| Full perception pipeline | 150 ms desktop (seg) / 25 ms Jetson | Configurable: `perception.latency_budget_ms`; advisory — over-budget logs, nothing dropped |
-| Detector | ~70% of budget | Biggest cost; -seg weights ≈ 1.5–2× box-only; TensorRT halves it |
-| Tracker + depth + lanes + light HSV | ~20% of budget | Near-constant regardless of backend |
+| Perception hot path | 100 ms desktop / 25 ms Jetson | Configurable: `perception.latency_budget_ms`; advisory — over-budget logs, nothing dropped |
+| AutoSpeed ONNX | ~85% of hot path | Biggest cost by far; ~60–120 ms fp32 on a CPU-only laptop. **INT8 is a regression there** (measured 156 ms vs 63 ms) — it needs VNNI to pay off |
+| Preprocess + decode + tracker + depth | ~15% of hot path | Near-constant regardless of backend |
+| Context pass (YOLO + lanes) | ~60 ms, every 1/`context_hz` s | Amortises to ~18 ms/frame at 3 Hz |
 | Scene + event engine | < 5 ms | Pure Python, no ML |
 | TTS first-sentence | < 800 ms | Sentence-boundary buffering in `tts.py` |
+
+Measure before optimising. Benchmarks taken while Cruze itself is running are
+worthless — the app saturates the CPU and inflates every number several fold.
+
+---
+
+## Perception runs at two cadences
+
+`pipeline.py` stages one frame through two independent rates:
+
+- **Hot path** (`perception.target_hz`, default 15) — shared crop-2:1
+  preprocess → AutoSpeed (vehicles/CIPO) → AutoSteer (ego path) → depth →
+  tracker. This is what the dashboard tracks.
+- **Context pass** (`perception.context_hz`, default 3) — YOLO restricted to
+  person / bicycle / traffic light / stop sign (`CONTEXT_CLASSES`), plus the
+  HSV lamp classifier and the classical lane fit. Cached between passes and
+  merged into every hot-path frame, expiring after `_CONTEXT_MAX_AGE_S`.
+
+AutoSpeed owns the vehicle classes; `detect_fusion.merge_detections` takes it
+as `primary` and appends only what it cannot see. **If no net supplies vehicles**
+(`VisionNets.has_vehicle_source` is False), the general detector returns to the
+hot path at full rate — otherwise a profile without AutoSpeed would detect no
+cars at all.
+
+The camera keeps publishing at its own rate so the video stays smooth; the rate
+gate drops surplus frames, and `_drain_to_newest` takes the newest queued frame
+rather than the oldest the drop-oldest queue hands back.
+
+### Two traps in this area
+
+- **Config resolution is a request, not a fact.** A capture device may ignore it
+  and a replayed file always does. `CameraService` corrects `camera.width/height`
+  and the derived focal length from the first real frame; anything reasoning in
+  image coordinates must read the config live, not cache it at construction.
+- **Exported ONNX heads may already be activated.** AutoSpeed's are —
+  `preprocess.is_activated` detects it. Applying sigmoid to a probability maps
+  [0,1] onto [0.5, 0.73], which silently turns a 0.6 threshold into 0.405.
 
 ---
 

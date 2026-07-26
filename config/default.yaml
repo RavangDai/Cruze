@@ -17,10 +17,13 @@ perception:
   max_track_age: 5
   iou_threshold: 0.3
   latency_budget_ms: 50.0
+  target_hz: 15.0          # perception hot-path rate; camera still streams at camera.fps
+  context_hz: 3.0          # YOLO pass for person / traffic light / stop sign
   camera_height_m: 1.2     # lens height above road surface (metres)
   camera_pitch_deg: 0.0    # positive = tilted down
   # vision_pilot ONNX nets (SP2) — all off by default; see config/hardware/vision_pilot.yaml.
   onnx_provider: cpu            # cpu | cuda | tensorrt
+  onnx_intra_op_threads: 0      # 0 = onnxruntime default; measure before changing
   autospeed_enabled: false
   autosteer_enabled: false
   autodrive_enabled: false
@@ -81,6 +84,7 @@ hmi:
   web_host: 127.0.0.1     # 0.0.0.0 to allow a dash-mounted tablet
   web_port: 8484
   jpeg_quality: 75        # WebSocket JPEG stream quality (1-100)
+  stream_width: 960       # downscale before encoding; 0 = full camera width
   window_title: Cruze HUD
   overlay_alpha: 0.7
   show_track_ids: true

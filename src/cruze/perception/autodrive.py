@@ -33,11 +33,15 @@ def load_homography(path: str) -> np.ndarray:
 
 class AutoDriveEstimator:
     def __init__(self, model_path: str, homography: np.ndarray, provider: str = "cpu",
-                 curv_scale: float = 1.0, flag_threshold: float = 0.5, session=None) -> None:
+                 curv_scale: float = 1.0, flag_threshold: float = 0.5, session=None,
+                 intra_op_threads: int = 0) -> None:
         self._homography = np.asarray(homography, dtype=np.float32)
         self._curv_scale = curv_scale
         self._flag_threshold = flag_threshold
-        self._session = session if session is not None else OnnxSession(model_path, provider)
+        self._session = (
+            session if session is not None
+            else OnnxSession(model_path, provider, intra_op_threads)
+        )
         self._prev_chw: np.ndarray | None = None
 
     def infer(self, image_bgr: np.ndarray) -> AutoDriveResult | None:

@@ -20,11 +20,13 @@ happen in practice).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
 
 from cruze.core.types import BBox, Detection, ObjectClass, Track, TrafficLightState
+from cruze.perception import depth
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +177,41 @@ class Tracker:
         self._max_age = max_age
         self._tracks: list[_TrackState] = []
         self._next_id: int = 1
+        # Per-frame context set by update(); used when emitting Tracks.
+        self._frame_id: int = 0
+        self._image_width: int = 0
+        self._focal_px: float | None = None
+
+    def _emit(self) -> list[Track]:
+        """Current tracks as immutable Tracks, stamped with the frame being
+        processed and their ground-plane position.
+
+        The whole list belongs to this frame even where an individual track
+        went unmatched, so every track carries the same frame_id — that is what
+        lets the dashboard pair the overlay with the right JPEG. Position is
+        derived from the Kalman-filtered distance rather than the raw
+        measurement, so it stays consistent with Track.distance_m.
+        """
+        out: list[Track] = []
+        for state in self._tracks:
+            track = dataclasses.replace(state.to_track(), frame_id=self._frame_id)
+            if self._image_width > 0 and self._focal_px:
+                track = dataclasses.replace(
+                    track,
+                    ground_xz_m=depth.ground_position_xz(
+                        track.bbox, track.distance_m, self._focal_px, self._image_width
+                    ),
+                )
+            out.append(track)
+        return out
 
     def update(
         self,
         detections: list[Detection],
         timestamp: float | None = None,
+        frame_id: int = 0,
+        image_width: int = 0,
+        focal_length_px: float | None = None,
     ) -> list[Track]:
         """
         Ingest a new set of detections and return the current live tracks.
@@ -190,14 +222,23 @@ class Tracker:
         timestamp:
             Frame timestamp in seconds (monotonic). Defaults to time.monotonic().
             Pass an explicit value in tests to make closing-speed math deterministic.
+        frame_id:
+            Camera frame these detections came from. Stamped onto every emitted
+            track so the dashboard can pin its overlay to the matching JPEG.
+        image_width, focal_length_px:
+            Intrinsics for the ground-plane (X, Z) projection. Both must be set
+            for `Track.ground_xz_m` to be populated.
         """
         now = timestamp if timestamp is not None else time.monotonic()
+        self._frame_id = frame_id
+        self._image_width = image_width
+        self._focal_px = focal_length_px
 
         if not self._tracks:
             # Bootstrap: every detection becomes a new track.
             for det in detections:
                 self._tracks.append(self._new_track(det, now))
-            return [t.to_track() for t in self._tracks]
+            return self._emit()
 
         # --- Build IoU cost matrix (tracks × detections, same class only) ---
         n_tracks = len(self._tracks)
@@ -244,7 +285,7 @@ class Tracker:
                 logger.debug("Track %d aged out after %d missed frames", trk.track_id, trk.age_missed)
         self._tracks = survivors
 
-        return [t.to_track() for t in self._tracks]
+        return self._emit()
 
     def _new_track(self, det: Detection, now: float) -> _TrackState:
         tid = self._next_id

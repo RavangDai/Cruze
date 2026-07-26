@@ -26,6 +26,13 @@ def _r(value: float | None, ndigits: int = 2) -> float | None:
 
 
 def track_to_dict(t: Track) -> dict[str, Any]:
+    """One track on the wire.
+
+    Instance masks are deliberately absent. The general detector now runs at a
+    few Hz for the classes AutoSpeed cannot see, so a mask outline would be
+    stale by the time it is drawn, and the overlay is stroke-based with no
+    fills to put one in. Track.mask_xy still exists upstream.
+    """
     return {
         "id": t.track_id,
         "cls": t.cls.value,
@@ -35,10 +42,10 @@ def track_to_dict(t: Track) -> dict[str, Any]:
         "closing_mps": _r(t.closing_speed_mps),
         "speed_mps": _r(t.speed_mps),
         "light": t.light_state.value if t.light_state is not None else None,
-        # Flat [x1,y1,x2,y2,...] halves the JSON overhead vs nested pairs.
-        "mask": (
-            [round(coord, 1) for point in t.mask_xy for coord in point]
-            if t.mask_xy is not None else None
+        # Ground-plane [lateral, forward] in metres — drives the plan view.
+        "xz": (
+            [round(t.ground_xz_m[0], 1), round(t.ground_xz_m[1], 1)]
+            if t.ground_xz_m is not None else None
         ),
     }
 
@@ -60,6 +67,20 @@ def _poly_to_list(poly: tuple[tuple[float, float], ...] | None) -> list[float] |
     return [
         round(coord, 1) for point in poly[:_MAX_POLY_POINTS] for coord in point
     ]
+
+
+# Defensive cap on ego-path points: AutoSteer emits up to 64 waypoints; bound
+# the wire payload even if a future producer over-samples.
+_MAX_EGO_POINTS = 64
+
+
+def _ego_path_to_list(
+    path: tuple[tuple[float, float], ...] | None,
+) -> list[float] | None:
+    """Flat [x1,y1,x2,y2,...] (halves JSON overhead vs nested pairs); None passes through."""
+    if path is None:
+        return None
+    return [round(coord, 1) for point in path[:_MAX_EGO_POINTS] for coord in point]
 
 
 def lanes_to_dict(lanes: Lanes | None) -> dict[str, Any] | None:
@@ -90,12 +111,23 @@ def scene_to_dict(s: Scene) -> dict[str, Any]:
     return {
         "type": "scene",
         "ts": s.timestamp,
+        # Frame this scene describes. The dashboard holds each JPEG until the
+        # scene with the matching id arrives, so the overlay is drawn against
+        # the image it was computed from rather than predicted forward.
+        "frame_id": s.frame_id,
         "tracks": [track_to_dict(t) for t in s.tracks],
         "lead_id": s.lead_track.track_id if s.lead_track is not None else None,
         "state": state_to_dict(s.vehicle_state),
         "lanes": lanes_to_dict(s.lanes),
         # IDM urgency scalar; the frontend colours the corridor with it.
         "accel": _r(s.required_accel_mps2),
+        # vision_pilot ONNX outputs (all None when the nets are disabled).
+        # ego_path → the blue AutoSteer planned-trajectory corridor; curvature
+        # is small (~0.002 1/m) so it keeps extra precision.
+        "ego_path": _ego_path_to_list(s.ego_path),
+        "curvature": _r(s.road_curvature_1pm, 4),
+        "cipo_dist": _r(s.cipo_distance_m, 1),
+        "cipo": s.cipo_flag,
     }
 
 

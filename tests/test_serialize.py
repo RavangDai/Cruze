@@ -1,5 +1,6 @@
 """hmi.serialize tests — everything must be json.dumps-able with no heavy deps."""
 
+import dataclasses
 import json
 
 from cruze.core.types import (
@@ -58,12 +59,44 @@ def test_scene_to_dict_handles_all_none():
     assert d["state"]["speed_mps"] is None
     assert d["lanes"] is None
     assert d["accel"] is None
+    # vision_pilot ego fields absent (nets disabled) → all null on the wire.
+    assert d["ego_path"] is None
+    assert d["curvature"] is None
+    assert d["cipo_dist"] is None
+    assert d["cipo"] is None
 
 
 def test_scene_accel_serialized():
     d = scene_to_dict(Scene(required_accel_mps2=-4.567))
     json.dumps(d)
     assert d["accel"] == -4.57
+
+
+def test_ego_fields_serialized():
+    # vision_pilot outputs: ego_path flattened + rounded, curvature to 4dp
+    # (values are ~0.002), cipo distance to 1dp, cipo flag passed through.
+    scene = Scene(
+        ego_path=((10.04, 20.06), (30.0, 40.0), (50.58, 60.0)),
+        road_curvature_1pm=0.00234,
+        cipo_distance_m=42.37,
+        cipo_flag=True,
+    )
+    d = scene_to_dict(scene)
+    json.dumps(d)  # must not raise
+    assert d["ego_path"] == [10.0, 20.1, 30.0, 40.0, 50.6, 60.0]
+    assert d["curvature"] == 0.0023
+    assert d["cipo_dist"] == 42.4
+    assert d["cipo"] is True
+
+
+def test_ego_path_point_cap():
+    # Defensive cap bounds wire size even if a producer over-samples.
+    from cruze.hmi.serialize import _MAX_EGO_POINTS
+
+    pts = tuple((float(i), float(i)) for i in range(_MAX_EGO_POINTS + 10))
+    d = scene_to_dict(Scene(ego_path=pts))
+    json.dumps(d)
+    assert len(d["ego_path"]) == _MAX_EGO_POINTS * 2
 
 
 def test_lane_polylines_and_cte_serialized():
@@ -88,19 +121,37 @@ def test_lanes_without_new_fields_serialize_null():
     assert d["lanes"]["cte_m"] is None
 
 
-def test_track_mask_serialized_flat():
-    # Flat [x1,y1,x2,y2,...] halves JSON overhead vs nested pairs.
+def test_track_mask_not_on_the_wire():
+    # Masks left the protocol: the general detector now runs at a few Hz, so an
+    # outline would be stale by the time it was drawn, and the overlay is
+    # stroke-based with nothing to fill. The upstream field still exists.
     t = _track(mask=((10.04, 20.06), (30.0, 40.0), (50.58, 20.0)))
+    assert t.mask_xy is not None
     d = scene_to_dict(Scene(tracks=(t,)))
     json.dumps(d)
-    assert d["tracks"][0]["mask"] == [10.0, 20.1, 30.0, 40.0, 50.6, 20.0]
+    assert "mask" not in d["tracks"][0]
 
 
-def test_track_without_mask_serializes_null():
+def test_track_without_optional_fields_serializes_null():
     d = scene_to_dict(Scene(tracks=(_track(),)))
     json.dumps(d)
-    assert d["tracks"][0]["mask"] is None
     assert d["tracks"][0]["light"] is None
+    assert d["tracks"][0]["xz"] is None
+
+
+def test_track_ground_position_serialized():
+    # [lateral, forward] metres — drives the plan view.
+    t = dataclasses.replace(_track(), ground_xz_m=(-1.234, 24.56))
+    d = scene_to_dict(Scene(tracks=(t,)))
+    json.dumps(d)
+    assert d["tracks"][0]["xz"] == [-1.2, 24.6]
+
+
+def test_scene_carries_frame_id():
+    # The dashboard pairs each JPEG with the scene sharing its frame_id.
+    d = scene_to_dict(Scene(frame_id=4242))
+    json.dumps(d)
+    assert d["frame_id"] == 4242
 
 
 def test_track_light_state_serialized():

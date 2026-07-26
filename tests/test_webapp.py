@@ -130,3 +130,24 @@ def test_websocket_accepts_and_delivers_both_kinds():
         assert ws.receive_text() == '{"type":"ping"}'
         hub.broadcast(("bin", b"\xff\xd8fakejpeg"))
         assert ws.receive_bytes() == b"\xff\xd8fakejpeg"
+
+
+# --- binary frame header ---------------------------------------------------
+
+def test_frame_header_round_trips_id_and_source_size():
+    import struct
+    from cruze.hmi.webapp import FRAME_HEADER_BYTES, frame_header
+
+    header = frame_header(70000, 1920, 1280)
+    assert len(header) == FRAME_HEADER_BYTES
+    frame_id, w, h = struct.unpack("<IHH", header)
+    assert (frame_id, w, h) == (70000, 1920, 1280)
+
+
+def test_frame_header_wraps_instead_of_overflowing():
+    # frame_id is a free-running counter; a long drive must not blow the field.
+    import struct
+    from cruze.hmi.webapp import frame_header
+
+    frame_id, _, _ = struct.unpack("<IHH", frame_header(2**32 + 5, 1920, 1280))
+    assert frame_id == 5
