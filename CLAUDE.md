@@ -134,12 +134,26 @@ followed by JPEG bytes:
 uint32 frame_id | uint16 source width | uint16 source height | JPEG…
 ```
 
-**Overlays are paired to frames by `frame_id`, never extrapolated.** The client
-holds each frame until the scene computed from it arrives, then draws both
-together. An earlier version predicted box positions forward along their pixel
-velocity to cover the gap; that guessing is what made the overlay wobble. If an
-overlay looks like it lags or leads the video, the pairing is broken — do not
-reintroduce smoothing to hide it.
+**Each frame is painted once, on arrival, and never repainted.** Video and
+overlay are separate canvases on separate clocks: the frame is drawn in the
+WebSocket handler, the overlay whenever a scene arrives. Two rules, both learned
+the hard way:
+
+- Never repaint the canvas with older content. Painting the newest frame on
+  arrival *and* repainting the frame a scene referred to made the video step
+  backward several times a second (22, 23, then back to 18).
+- Never predict box positions between scenes. An early version extrapolated
+  along pixel velocity, which is what made the overlay wobble. The overlay is at
+  most one perception period behind the image, but it is always something
+  perception actually computed.
+
+A buffered presentation queue that held each frame until its own scene arrived
+was tried and removed: perception runs slower than the camera, so half the
+frames can never have an exact scene, and the queue only added latency and
+pacing bugs to reach the same result.
+
+Drawing in the socket handler rather than `requestAnimationFrame` also keeps the
+stage alive in a background tab, where rAF is throttled to zero.
 
 The source dimensions ride in the header because overlay coordinates are in
 camera-frame pixels while the JPEG is downscaled to `hmi.stream_width`.
@@ -229,6 +243,28 @@ cars at all.
 The camera keeps publishing at its own rate so the video stays smooth; the rate
 gate drops surplus frames, and `_drain_to_newest` takes the newest queued frame
 rather than the oldest the drop-oldest queue hands back.
+
+### Tracking
+
+`tracker.py` Kalman-filters the **box** (centre + size), not just distance. The
+detector re-localises every box from scratch, so unfiltered output carried its
+jitter to the screen *and* into depth, where a jittering box bottom near the
+horizon swung range by tens of metres. Measured on real footage: trajectory
+curvature (second difference of the centre) dropped from 31.8 px to 4.4 px.
+
+Two things to know before touching it:
+
+- **`predict()` mutates state.** Derive its step from `last_predicted`, not
+  `last_updated` — the latter only advances on a match, so a coasting track
+  would re-predict from a stale origin with a growing dt and compound its own
+  extrapolation until the box flew off the object.
+- **Judge smoothness by second difference, not step size.** Raw step size is
+  dominated by genuine ego motion and barely moves when the filter is working;
+  it made a 7x improvement look like a regression.
+
+Age-out takes `max_track_age` (frames) and `max_track_age_s` (wall clock),
+whichever bites first. A frame count alone means 170 ms at 30 fps but a full
+second at 5 Hz — that mismatch was most of what "ghost boxes" were.
 
 ### Two traps in this area
 

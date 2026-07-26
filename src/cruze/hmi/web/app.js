@@ -20,10 +20,6 @@ const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 8000;
 // Edge bars stay lit roughly a human reaction window past their event.
 const ALERT_TTL_MS = 2500;
-// Frames held awaiting their scene. Perception runs at ~15 Hz against a 30 fps
-// camera, so a scene is at most a couple of frames behind; 12 is generous and
-// bounds memory at a dozen bitmaps.
-const FRAME_BUFFER = 12;
 // A stage lamp stays lit this long after its stage last produced output.
 const STAGE_TTL_MS = 1200;
 
@@ -38,10 +34,7 @@ const overlayCtx = overlayCanvas.getContext("2d");
 const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
 const state = {
-  scene: null,          // newest scene received, for the instrument panels
-  shownScene: null,     // scene belonging to the frame currently on the stage
-  frames: new Map(),    // frame_id → { bitmap, at }, queued for presentation
-  scenes: new Map(),    // frame_id → scene, awaiting its frame
+  scene: null,          // newest scene, drives both the overlay and the panels
   frameSize: null,      // { w, h, srcW, srcH } of the streamed bitmap
   lastFrameAt: 0,
   frameTimes: [],
@@ -74,16 +67,9 @@ async function onBinary(buffer) {
 
   sizeCanvases(bitmap.width, bitmap.height, srcW, srcH);
 
-  // Queued, not drawn. Painting on arrival and then repainting the older frame
-  // a scene refers to made the video step backward several times a second —
-  // frame 22, 23, then back to 18. Frames are presented in order by the render
-  // loop instead, each with the overlay computed from it.
-  state.frames.set(frameId, { bitmap, at: performance.now() });
-  while (state.frames.size > FRAME_BUFFER) {
-    const oldest = state.frames.keys().next().value;
-    state.frames.get(oldest).bitmap.close();
-    state.frames.delete(oldest);
-  }
+  // Painted once, here, in socket order — and never repainted afterwards.
+  videoCtx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+  bitmap.close();
 
   const now = performance.now();
   state.lastFrameAt = now;
@@ -113,11 +99,7 @@ function sizeCanvases(w, h, srcW, srcH) {
 
 function onScene(scene) {
   state.scene = scene;
-  // Parked until its frame reaches the front of the presentation queue.
-  state.scenes.set(scene.frame_id, scene);
-  while (state.scenes.size > FRAME_BUFFER) {
-    state.scenes.delete(state.scenes.keys().next().value);
-  }
+  repaintOverlay();
 
   const now = performance.now();
   state.sceneTimes.push(now);
@@ -263,58 +245,26 @@ function applyEdgeAlerts() {
 
 /* ---------- render loop ---------- */
 
-/* Presentation queue.
+/* Overlay repaint.
 
-   Frames are held until the scene computed from them arrives, then played out
-   in ascending frame_id — never backward, never twice. Perception lags the
-   camera by about one cycle, so this costs a little display latency and buys
-   exact pairing: the overlay always describes the image beneath it, with
-   nothing predicted.
+   Video and overlay live on separate canvases, so they are updated on their own
+   clocks: each frame is painted once, on arrival, in the order the socket
+   delivers it; the overlay is repainted whenever a scene arrives. Nothing is
+   ever repainted with older content, which is what made the video step
+   backward — frame 22, 23, then back to 18.
 
-   If a frame waits past PRESENT_TIMEOUT_MS without its scene (perception fell
-   behind, or the scene was dropped by a full bus queue) it is presented anyway
-   with the previous overlay. A stalled picture is worse than a slightly stale
-   overlay. */
-const PRESENT_TIMEOUT_MS = 400;
-
-function present(frameId, entry, scene) {
-  videoCtx.drawImage(entry.bitmap, 0, 0, state.frameSize.w, state.frameSize.h);
-  entry.bitmap.close();
-
-  // Everything at or before this frame is now unreachable.
-  for (const id of [...state.frames.keys()]) {
-    if (id <= frameId) {
-      if (id !== frameId) state.frames.get(id).bitmap.close();
-      state.frames.delete(id);
-    }
-  }
-  for (const id of [...state.scenes.keys()]) {
-    if (id < frameId) state.scenes.delete(id);
-  }
-
-  if (scene) {
-    state.shownScene = scene;
-    state.scenes.delete(frameId);
-  }
+   An earlier version buffered frames and held each until its own scene landed.
+   That bought exact pairing, but perception runs slower than the camera, so
+   half the frames can never have a scene of their own and the queue only added
+   latency and pacing bugs to reach the same place. The overlay is at most one
+   perception period behind the image beneath it — and, unlike the extrapolation
+   this replaced, it is always something perception actually computed. */
+function repaintOverlay() {
+  if (!state.frameSize || !state.scene) return;
   // Camera-frame px → displayed px. The overlay canvas matches the streamed
   // bitmap, so this is the downscale factor the encoder applied.
   const scale = (overlayCanvas.width / dpr) / state.frameSize.srcW;
-  drawOverlay(overlayCtx, state.shownScene, scale, dpr);
-}
-
-function renderLoop() {
-  if (state.frameSize && state.frames.size) {
-    // Oldest queued frame first: presentation order is capture order.
-    const frameId = state.frames.keys().next().value;
-    const entry = state.frames.get(frameId);
-    const scene = state.scenes.get(frameId);
-    if (scene) {
-      present(frameId, entry, scene);
-    } else if (performance.now() - entry.at > PRESENT_TIMEOUT_MS) {
-      present(frameId, entry, null);
-    }
-  }
-  requestAnimationFrame(renderLoop);
+  drawOverlay(overlayCtx, state.scene, scale, dpr);
 }
 
 /* ---------- websocket ---------- */
@@ -391,4 +341,3 @@ window.addEventListener("resize", sizeBev);
 
 sizeBev();
 connect();
-requestAnimationFrame(renderLoop);
