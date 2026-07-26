@@ -6,6 +6,8 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 import numpy as np
 
+from cruze.core.types import LaneLine
+from cruze.perception import lane
 from cruze.perception.lane import detect_lanes
 
 
@@ -92,3 +94,35 @@ def test_sparse_side_falls_back_to_line_only():
     # Sparse left: whatever Hough finds, the poly path must not fabricate a
     # curve from a single segment (its LaneLine fallback may still exist).
     assert result.left_poly is None
+
+
+# --- Vanishing point / horizon ---
+
+def test_vanishing_point_from_converging_boundaries():
+    # Two boundaries converging on (960, 600) in a 1280-tall frame.
+    left = LaneLine(x1=460.0, y1=1280.0, x2=960.0, y2=600.0)
+    right = LaneLine(x1=1460.0, y1=1280.0, x2=960.0, y2=600.0)
+    assert lane.vanishing_point_y(left, right, 1280) == pytest.approx(600.0, abs=0.5)
+
+
+def test_vanishing_point_needs_both_boundaries():
+    line = LaneLine(x1=460.0, y1=1280.0, x2=960.0, y2=600.0)
+    assert lane.vanishing_point_y(line, None, 1280) is None
+    assert lane.vanishing_point_y(None, line, 1280) is None
+    assert lane.vanishing_point_y(None, None, 1280) is None
+
+
+def test_vanishing_point_rejects_near_parallel_boundaries():
+    # Parallel lines meet at infinity, where a pixel of fit noise moves the
+    # answer arbitrarily far.
+    left = LaneLine(x1=400.0, y1=1280.0, x2=400.0, y2=600.0)
+    right = LaneLine(x1=1500.0, y1=1280.0, x2=1500.0, y2=600.0)
+    assert lane.vanishing_point_y(left, right, 1280) is None
+
+
+def test_vanishing_point_rejects_implausible_row():
+    # Converging just above the bonnet: the fit latched onto something that is
+    # not a pair of lanes, and a horizon there would wreck every distance.
+    left = LaneLine(x1=100.0, y1=1280.0, x2=940.0, y2=1270.0)
+    right = LaneLine(x1=1800.0, y1=1280.0, x2=980.0, y2=1270.0)
+    assert lane.vanishing_point_y(left, right, 1280) is None

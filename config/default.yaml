@@ -14,7 +14,8 @@ perception:
   model_path: models/yolov8n-seg.pt   # -seg = instance masks; box-only weights also work
   confidence_threshold: 0.4
   lane_detection_enabled: true        # classical Canny+Hough, ~3-5 ms at 720p
-  max_track_age: 5
+  max_track_age: 5          # max consecutive missed frames
+  max_track_age_s: 0.4      # ...and max wall-clock coast, whichever bites first
   iou_threshold: 0.3
   latency_budget_ms: 50.0
   target_hz: 15.0          # perception hot-path rate; camera still streams at camera.fps
@@ -30,7 +31,10 @@ perception:
   autospeed_model_path: models/autospeed_fp32.onnx
   autosteer_model_path: models/autosteer_fp32.onnx
   autodrive_model_path: models/autodrive_fp32.onnx
-  autospeed_conf_threshold: 0.6
+  # 0.7 measured as the knee on real footage: identical recall to 0.6 (0.96
+  # against a YOLO reference) with 58 boxes instead of 82. Recall collapses to
+  # 0.68 by 0.8.
+  autospeed_conf_threshold: 0.7
   autospeed_iou_threshold: 0.45
   autodrive_homography_path: calibration/vision_pilot_C.yaml
   autodrive_curv_scale: 1.0

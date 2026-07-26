@@ -108,6 +108,13 @@ function trackLabel(t) {
 // at any capture resolution. The lead is always labelled.
 const LABEL_MIN_HEIGHT_FRAC = 0.035;
 
+// A track with no detection this frame is the tracker's prediction, not an
+// observation. One coasted frame is drawn faded — that is the single missed
+// detection coasting exists to bridge. Beyond that it is dropped rather than
+// left as a bracket on empty road.
+const COAST_MAX_DRAWN = 1;
+const COAST_ALPHA = 0.4;
+
 function drawLabel(ctx, t, color) {
   const [x1, y1] = t.bbox;
   const text = trackLabel(t);
@@ -349,14 +356,20 @@ export function drawOverlay(ctx, scene, scale = 1, dpr = 1) {
   drawEgoPath(ctx, scene.ego_path, fw, fh);
 
   for (const t of scene.tracks || []) {
+    const missed = t.missed || 0;
+    if (missed > COAST_MAX_DRAWN) continue;
+
     const isLead = t.id === scene.lead_id;
     const color = trackColor(t);
+    ctx.save();
+    if (missed > 0) ctx.globalAlpha = COAST_ALPHA;
     drawBrackets(ctx, t, color, isLead);
     if (t.cls === "traffic_light") drawLampStack(ctx, t);
     if (isLead || t.bbox[3] - t.bbox[1] >= fh * LABEL_MIN_HEIGHT_FRAC) {
       drawLabel(ctx, t, isLead ? INTENT : color);
     }
     if (isLead) drawLeadRange(ctx, t);
+    ctx.restore();
   }
   ctx.restore();
 }

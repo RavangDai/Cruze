@@ -42,6 +42,10 @@ def track_to_dict(t: Track) -> dict[str, Any]:
         "closing_mps": _r(t.closing_speed_mps),
         "speed_mps": _r(t.speed_mps),
         "light": t.light_state.value if t.light_state is not None else None,
+        # Frames since a detection last matched. 0 = measured this frame; above
+        # that the box is the tracker's prediction, and the overlay fades it out
+        # rather than presenting a guess as an observation.
+        "missed": t.age_missed,
         # Ground-plane [lateral, forward] in metres — drives the plan view.
         "xz": (
             [round(t.ground_xz_m[0], 1), round(t.ground_xz_m[1], 1)]

@@ -11,7 +11,9 @@ def test_vision_net_defaults_off():
     assert c.autodrive_enabled is False
     assert c.onnx_provider == "cpu"
     assert c.autospeed_model_path.endswith("autospeed_fp32.onnx")
-    assert c.autospeed_conf_threshold == 0.6
+    # 0.7, not vision_pilot's 0.6: measured knee on real footage — same recall,
+    # ~30% fewer boxes.
+    assert c.autospeed_conf_threshold == 0.7
     assert c.autospeed_iou_threshold == 0.45
 
 

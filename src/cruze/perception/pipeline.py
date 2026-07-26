@@ -45,7 +45,7 @@ from cruze.perception import detect_fusion
 from cruze.perception import lane as lane_mod
 from cruze.perception import lights as lights_mod
 from cruze.perception.detector import Detector
-from cruze.perception.tracker import Tracker
+from cruze.perception.tracker import CameraGeometry, Tracker
 
 if TYPE_CHECKING:
     from cruze.core.config import Config
@@ -106,6 +106,36 @@ class _ScalarKalman:
         return self.x
 
 
+class _HorizonEstimate:
+    """Slowly-converging horizon row, seeded from configured camera pitch.
+
+    Mount angle is a property of the installation, not of the moment, so the
+    estimate is damped hard: a single lane fit barely moves it, and transient
+    body pitch under braking averages out. `lane.vanishing_point_y` has already
+    rejected implausible fits before anything reaches here.
+    """
+
+    # ~20 measurements to converge. At the context-pass rate that is several
+    # seconds of driving — slow on purpose, because a horizon that chases the
+    # road surface would make every distance breathe.
+    _ALPHA = 0.05
+
+    def __init__(self) -> None:
+        self._value: float | None = None
+
+    def update(self, measured: float | None, fallback: float) -> float:
+        if measured is None:
+            return self._value if self._value is not None else fallback
+        if self._value is None:
+            self._value = fallback  # start from config, converge toward measurement
+        self._value += (measured - self._value) * self._ALPHA
+        return self._value
+
+    @property
+    def value(self) -> float | None:
+        return self._value
+
+
 class PerceptionService:
     """
     Subscribes to PERCEPTION_FRAME, runs the two-cadence pipeline, and
@@ -142,6 +172,7 @@ class PerceptionService:
         self._tracker = Tracker(
             iou_threshold=cfg.perception.iou_threshold,
             max_age=cfg.perception.max_track_age,
+            max_age_s=cfg.perception.max_track_age_s,
         )
         self._running = False
         # Inference gets a dedicated single worker. On the shared default
@@ -151,6 +182,9 @@ class PerceptionService:
         # Smoothed lane cross-track error (per-stream state, like the tracker).
         self._cte_kalman = _ScalarKalman()
         self._last_cte_ts = 0.0
+        # Horizon row, measured from lane geometry rather than trusted from the
+        # configured camera pitch.
+        self._horizon = _HorizonEstimate()
         # Cached output of the low-rate context pass.
         self._context_dets: tuple[Detection, ...] = ()
         self._context_at = 0.0
@@ -267,10 +301,21 @@ class PerceptionService:
         horizon_y: float | None = None
         if frame.focal_length_px is not None:
             image_height = frame.image.shape[0]
-            horizon_y = depth_mod.horizon_y_px(
-                image_height,
-                frame.focal_length_px,
-                self._cfg.perception.camera_pitch_deg,
+            # Configured pitch gives the starting point; the lane vanishing
+            # point corrects it from what the camera actually sees. On frames
+            # without a lane fit (most of them — lanes come from the low-rate
+            # context pass) the converged estimate carries over.
+            measured = (
+                lane_mod.vanishing_point_y(lane_result.left, lane_result.right, image_height)
+                if lane_result is not None else None
+            )
+            horizon_y = self._horizon.update(
+                measured,
+                depth_mod.horizon_y_px(
+                    image_height,
+                    frame.focal_length_px,
+                    self._cfg.perception.camera_pitch_deg,
+                ),
             )
             # dataclasses.replace keeps every other field (mask_xy,
             # light_state, future additions) intact.
@@ -311,8 +356,12 @@ class PerceptionService:
             detections,
             timestamp=frame.timestamp,
             frame_id=frame.frame_id,
-            image_width=frame.image.shape[1],
-            focal_length_px=frame.focal_length_px,
+            geometry=CameraGeometry(
+                image_width=frame.image.shape[1],
+                focal_px=frame.focal_length_px,
+                camera_height_m=self._cfg.perception.camera_height_m,
+                horizon_y=horizon_y,
+            ),
         )
         await self._bus.publish(Channel.PERCEPTION_TRACKS, tracks)
 

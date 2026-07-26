@@ -285,3 +285,111 @@ def test_non_light_track_light_state_stays_none():
     tracker.update([_det(10, 10, 50, 50)], timestamp=0.0)
     tracks = tracker.update([_det(10, 10, 50, 50)], timestamp=0.1)
     assert tracks[0].light_state is None
+
+
+# --- Box filtering (smoothness) ---
+
+def _jittered(cx, cy, half, rng):
+    j = lambda: rng.uniform(-8, 8)
+    return _det(cx - half + j(), cy - half + j(), cx + half + j(), cy + half + j())
+
+
+def test_filtered_box_is_smoother_than_its_input():
+    # The detector re-localises every box from scratch, so its output carries
+    # several px of jitter. Unfiltered, that reached both the screen and the
+    # depth estimator. The track's box must move less than the measurements do.
+    import random
+    rng = random.Random(7)
+    tracker = Tracker(iou_threshold=0.3, max_age=5, max_age_s=10.0)
+
+    raw_steps, trk_steps = [], []
+    prev_raw = prev_trk = None
+    for i in range(30):
+        cx = 300.0 + 4.0 * i          # steady motion, 4 px per frame
+        det = _jittered(cx, 300.0, 40, rng)
+        tracks = tracker.update([det], timestamp=i * 0.1)
+        assert len(tracks) == 1
+        if prev_raw is not None:
+            raw_steps.append(abs(det.bbox.cx - prev_raw))
+            trk_steps.append(abs(tracks[0].bbox.cx - prev_trk))
+        prev_raw, prev_trk = det.bbox.cx, tracks[0].bbox.cx
+
+    raw = sum(raw_steps) / len(raw_steps)
+    filtered = sum(trk_steps) / len(trk_steps)
+    assert filtered < raw * 0.8, f"filter did not smooth: raw {raw:.1f} px vs filtered {filtered:.1f} px"
+
+
+def test_filtered_box_still_follows_the_object():
+    # Smoothing must not become lag: after a few frames of steady motion the
+    # estimate has to sit on the target, or every distance derived from it is
+    # wrong in a consistent direction.
+    tracker = Tracker(iou_threshold=0.3, max_age=5, max_age_s=10.0)
+    for i in range(15):
+        cx = 300.0 + 10.0 * i
+        tracks = tracker.update(
+            [_det(cx - 40, 260, cx + 40, 340)], timestamp=i * 0.1
+        )
+    assert abs(tracks[0].bbox.cx - (300.0 + 10.0 * 14)) < 6.0
+
+
+def test_coasting_track_predicts_forward_instead_of_freezing():
+    # An unmatched track used to hold its last box, leaving a bracket on empty
+    # road while the vehicle drove on. It should keep moving on its velocity.
+    tracker = Tracker(iou_threshold=0.3, max_age=5, max_age_s=10.0)
+    for i in range(10):
+        cx = 300.0 + 20.0 * i
+        tracker.update([_det(cx - 40, 260, cx + 40, 340)], timestamp=i * 0.1)
+    last_seen = tracker.update([], timestamp=1.0)[0].bbox.cx
+    coasted = tracker.update([], timestamp=1.1)[0].bbox.cx
+    assert coasted > last_seen + 5.0, "coasting track froze instead of predicting"
+
+
+# --- Age-out is rate-independent ---
+
+def test_coast_duration_is_the_same_at_5hz_and_30hz():
+    # max_age alone is a frame count: 5 frames is 170 ms at 30 fps but a full
+    # second at 5 Hz. The wall-clock cap is what keeps ghost boxes bounded when
+    # the pipeline slows down.
+    def last_drawn_coast(dt):
+        """Longest a track is still emitted after its last detection."""
+        tracker = Tracker(iou_threshold=0.3, max_age=5, max_age_s=0.4)
+        tracker.update([_det(10, 10, 50, 50)], timestamp=0.0)
+        t = 0.0
+        longest = 0.0
+        while True:
+            t += dt
+            if not tracker.update([], timestamp=t):
+                return longest
+            longest = t
+
+    fast = last_drawn_coast(1 / 30)
+    slow = last_drawn_coast(1 / 5)
+    # Neither rate may leave a box on screen past the wall-clock budget. The two
+    # need not be equal — at 30 Hz the frame cap (5 frames = 0.17 s) bites first,
+    # which is the point of taking whichever is tighter.
+    assert fast <= 0.4, f"{fast:.2f}s at 30 Hz"
+    assert slow <= 0.4, f"{slow:.2f}s at 5 Hz"
+    # The regression this guards: with the frame cap alone, 5 frames at 5 Hz
+    # left a stale box up for a full second.
+    assert slow < 1.0
+
+
+def test_coasting_track_does_not_compound_its_own_prediction():
+    # predict() mutates state, so the step must come from the last predict, not
+    # the last match. Deriving it from last_updated made a coasting track
+    # re-predict from a stale origin with a growing dt, compounding until the
+    # box flew off the object — it looked like the filter had made jitter worse.
+    tracker = Tracker(iou_threshold=0.3, max_age=9, max_age_s=10.0)
+    for i in range(10):
+        cx = 300.0 + 20.0 * i
+        tracker.update([_det(cx - 40, 260, cx + 40, 340)], timestamp=i * 0.1)
+
+    # Velocity is 200 px/s; four coasted frames of 0.1 s should advance ~80 px.
+    positions = [tracker.update([], timestamp=0.9 + 0.1 * n)[0].bbox.cx
+                 for n in range(1, 5)]
+    advanced = positions[-1] - positions[0]
+    assert 40.0 < advanced < 110.0, f"coast advanced {advanced:.0f} px over 0.3 s"
+
+    # Each step must be roughly constant, not growing.
+    steps = [b - a for a, b in zip(positions, positions[1:])]
+    assert max(steps) < 2.0 * min(steps), f"compounding prediction: {steps}"

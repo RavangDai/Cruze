@@ -54,6 +54,11 @@ class PerceptionConfig:
     lane_detection_enabled: bool = True
     # Max missed frames before a track is dropped.
     max_track_age: int = 5
+    # Max wall-clock seconds a track may coast unmatched, whichever cap bites
+    # first. A frame count alone means very different things at 30 fps and at
+    # 5 Hz — the same setting left stale boxes on the road six times longer once
+    # the pipeline slowed down, which is most of what "ghost boxes" were.
+    max_track_age_s: float = 0.4
     # Min IoU for a detection to be associated with an existing track.
     iou_threshold: float = 0.3
     # Latency budget for the full perception pipeline in milliseconds.
@@ -90,7 +95,9 @@ class PerceptionConfig:
     autospeed_model_path: str = "models/autospeed_fp32.onnx"
     autosteer_model_path: str = "models/autosteer_fp32.onnx"
     autodrive_model_path: str = "models/autodrive_fp32.onnx"
-    autospeed_conf_threshold: float = 0.6   # vision_pilot default
+    # 0.7 is the measured knee on real footage: same recall as 0.6 with ~30%
+    # fewer boxes. (vision_pilot ships 0.6.)
+    autospeed_conf_threshold: float = 0.7
     autospeed_iou_threshold: float = 0.45   # vision_pilot NMS default
     # AutoDrive BEV homography (raw px → 1024x512). Camera-specific — see spec §11.
     autodrive_homography_path: str = "calibration/vision_pilot_C.yaml"
